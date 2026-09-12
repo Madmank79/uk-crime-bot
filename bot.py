@@ -14,14 +14,13 @@ RSS_FEEDS = [
     "https://www.manchestereveningnews.co.uk/news/?service=rss",
     "https://www.leeds-live.co.uk/news/?service=rss",
     "https://www.liverpoolecho.co.uk/news/?service=rss",
-    "https://www.myportsmouth.co.uk/news/rss", # Regional coverage placeholder/standard format
-    "https://www.chroniclelive.co.uk/news/?service=rss", # Newcastle
-    "https://www.glasgowtimes.co.uk/news/rss/", # Glasgow
-    "https://www.edinburghnews.scotsman.com/rss", # Edinburgh
-    "https://www.nottinghampost.com/news/?service=rss", # Nottingham
-    "https://www.sunderlandecho.com/news/rss", # Sunderland
-    "https://www.birminghammail.co.uk/news/?service=rss", # Birmingham
-    "https://www.leicestermercury.co.uk/news/?service=rss" # Leicester
+    "https://www.chroniclelive.co.uk/news/?service=rss",
+    "https://www.glasgowtimes.co.uk/news/rss/",
+    "https://www.edinburghnews.scotsman.com/rss",
+    "https://www.nottinghampost.com/news/?service=rss",
+    "https://www.sunderlandecho.com/news/rss",
+    "https://www.birminghammail.co.uk/news/?service=rss",
+    "https://www.leicestermercury.co.uk/news/?service=rss"
 ]
 
 # Comprehensive Keywords for crime, courts, and major incidents
@@ -32,7 +31,38 @@ KEYWORDS = [
     "stabbing", "murder", "machete", "brawl", "gang", "offense"
 ]
 
+# Map feed sources or locations to readable labels
+LOCATION_KEYWORDS = {
+    "manchestereveningnews": "Manchester",
+    "leeds-live": "Leeds",
+    "liverpoolecho": "Liverpool",
+    "chroniclelive": "Newcastle",
+    "glasgowtimes": "Glasgow",
+    "edinburghnews": "Edinburgh",
+    "nottinghampost": "Nottingham",
+    "sunderlandecho": "Sunderland",
+    "birminghammail": "Birmingham",
+    "leicestermercury": "Leicester",
+    "judiciary.uk": "UK Courts",
+    "bbci.co.uk": "National UK"
+}
+
 seen_articles = set()
+
+def detect_location(feed_url, text):
+    # Check feed URL mapping first
+    for domain, loc in LOCATION_KEYWORDS.items():
+        if domain in feed_url:
+            return loc
+            
+    # Fallback to scanning text for explicit cities if it's national news
+    text_lower = text.lower()
+    cities = ["manchester", "london", "glasgow", "edinburgh", "nottingham", "newcastle", "sunderland", "birmingham", "leicester", "leeds", "liverpool"]
+    for city in cities:
+        if city in text_lower:
+            return city.capitalize()
+            
+    return "UK"
 
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -66,14 +96,14 @@ def run_bot():
                         combined_text = (title + " " + summary).lower()
                         
                         if any(kw in combined_text for kw in KEYWORDS):
-                            message = f"🚨 <b>New Alert</b>\n\n<b>{title}</b>\n\n{link}"
+                            location = detect_location(feed_url, combined_text)
+                            message = f"🚨 <b>{location} Alert</b>\n\n<b>{title}</b>\n\n{link}"
                             send_telegram_message(message)
-                            print(f"New alert posted: {title}")
-                            time.sleep(1) # Prevent flooding Telegram API
+                            print(f"Alert posted [{location}]: {title}")
+                            time.sleep(1)
             except Exception as e:
                 print(f"Error parsing feed {feed_url}: {e}")
                 
-        # Wait 5 minutes before checking again
         time.sleep(300)
 
 if __name__ == "__main__":
