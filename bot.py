@@ -23,12 +23,18 @@ RSS_FEEDS = [
     "https://www.leicestermercury.co.uk/news/?service=rss"
 ]
 
-# Comprehensive Keywords for crime, courts, and major incidents
+# Expanded Keyword List including your new additions
 KEYWORDS = [
-    "court", "trial", "judge", "police", "sentence", "prison", "hearing", 
-    "inquest", "crime", "jury", "robbery", "fight", "attack", "knife", 
-    "rape", "assault", "race", "hurt", "punch", "gun", "shooting", 
-    "stabbing", "murder", "machete", "brawl", "gang", "offense"
+    # Original legal/court & crime terms
+    "court", "trial", "judge", "sentence", "prison", "hearing", 
+    "inquest", "crime", "jury", "offense", "offence",
+    "robbery", "fight", "attack", "knife", "rape", "assault", "race", 
+    "hurt", "punch", "gun", "stabbing", "murder", "machete", "brawl", 
+    "gang", "shooting", "arrest", "charged", "investigation", "weapon", 
+    "thief", "burglary", "cops", "detectives", "tragedy", "tragic", "hotspot",
+    # User-added terms
+    "rightwing", "leftwing", "just in", "breaking news", 
+    "sex attack", "counter fit", "counterfeit", "police"
 ]
 
 # Map feed sources or locations to readable labels
@@ -50,14 +56,16 @@ LOCATION_KEYWORDS = {
 seen_articles = set()
 
 def detect_location(feed_url, text):
-    # Check feed URL mapping first
     for domain, loc in LOCATION_KEYWORDS.items():
         if domain in feed_url:
             return loc
             
-    # Fallback to scanning text for explicit cities if it's national news
     text_lower = text.lower()
-    cities = ["manchester", "london", "glasgow", "edinburgh", "nottingham", "newcastle", "sunderland", "birmingham", "leicester", "leeds", "liverpool"]
+    cities = [
+        "manchester", "london", "glasgow", "edinburgh", "nottingham", 
+        "newcastle", "sunderland", "birmingham", "leicester", "leeds", 
+        "liverpool", "cardiff", "belfast", "sheffield", "bristol"
+    ]
     for city in cities:
         if city in text_lower:
             return city.capitalize()
