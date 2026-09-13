@@ -1,8 +1,10 @@
+
 import os
 import time
 import re
 import feedparser
 import requests
+from bs4 import BeautifulSoup
 
 # Configuration from Railway Environment Variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -73,15 +75,31 @@ def detect_location(feed_url, text):
             
     return "UK"
 
-def clean_html(raw_html):
-    if not raw_html:
-        return ""
-    # Convert breaks and paragraphs to newlines
-    clean = re.sub(r'<br\s*/?>', '\n', raw_html)
-    clean = re.sub(r'</p>', '\n\n', clean)
-    # Strip remaining HTML tags so Telegram doesn't crash on bad formatting
-    clean = re.sub(r'<.*?>', '', clean)
-    return clean.strip()
+def scrape_full_article(url):
+    """Scrapes the live article page to extract the full body text."""
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Target common article body containers used by news publishers
+            body_container = soup.find('div', class_=lambda x: x and ('article-body' in x or 'story-body' in x or 'content-body' in x))
+            
+            if body_container:
+                paragraphs = body_container.find_all('p')
+            else:
+                # Fallback to main or article tags
+                main_tag = soup.find('main') or soup.find('article') or soup
+                paragraphs = main_tag.find_all('p')
+                
+            # Filter and clean paragraph texts
+            clean_paragraphs = [p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 30]
+            full_text = "\n\n".join(clean_paragraphs)
+            return full_text
+    except Exception as e:
+        print(f"Scraping error for {url}: {e}")
+    return ""
 
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -111,22 +129,19 @@ def run_bot():
                     if article_id not in seen_articles:
                         seen_articles.add(article_id)
                         
-                        # Extract the longest available content block or summary
-                        raw_content = ""
-                        if hasattr(entry, 'content') and entry.content:
-                            raw_content = entry.content[0].get('value', '')
-                        elif hasattr(entry, 'summary'):
-                            raw_content = entry.summary
-                        elif hasattr(entry, 'description'):
-                            raw_content = entry.description
-                            
-                        body_text = clean_html(raw_content)
-                        combined_text = (title + " " + body_text).lower()
+                        summary = entry.summary if 'summary' in entry else ""
+                        combined_text = (title + " " + summary).lower()
                         
                         if any(kw in combined_text for kw in KEYWORDS):
                             location = detect_location(feed_url, combined_text)
                             
-                            # Maximize length safely under Telegram's 4096 char limit
+                            # Attempt to scrape the full article text from the link
+                            scraped_body = scrape_full_article(link)
+                            
+                            # Fallback to RSS summary if scraping returned nothing
+                            body_text = scraped_body if scraped_body else summary
+                            
+                            # Respect Telegram's 4096 character limit
                             max_body_length = 3200
                             if len(body_text) > max_body_length:
                                 body_text = body_text[:max_body_length] + "..."
@@ -135,12 +150,12 @@ def run_bot():
                                 f"🚨 <b>{location} Alert</b>\n\n"
                                 f"<b>{title}</b>\n\n"
                                 f"{body_text}\n\n"
-                                f"<a href='{link}'>Read full story on site</a>"
+                                f"<a href='{link}'>Read original story</a>"
                             )
                             
                             send_telegram_message(message)
                             print(f"Alert posted [{location}]: {title}")
-                            time.sleep(1)
+                            time.sleep(2)
             except Exception as e:
                 print(f"Error parsing feed {feed_url}: {e}")
                 
