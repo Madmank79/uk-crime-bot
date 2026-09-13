@@ -1,5 +1,6 @@
 import os
 import time
+import re
 import feedparser
 import requests
 
@@ -72,6 +73,16 @@ def detect_location(feed_url, text):
             
     return "UK"
 
+def clean_html(raw_html):
+    if not raw_html:
+        return ""
+    # Convert breaks and paragraphs to newlines
+    clean = re.sub(r'<br\s*/?>', '\n', raw_html)
+    clean = re.sub(r'</p>', '\n\n', clean)
+    # Strip remaining HTML tags so Telegram doesn't crash on bad formatting
+    clean = re.sub(r'<.*?>', '', clean)
+    return clean.strip()
+
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -100,17 +111,31 @@ def run_bot():
                     if article_id not in seen_articles:
                         seen_articles.add(article_id)
                         
-                        summary = entry.summary if 'summary' in entry else ""
-                        combined_text = (title + " " + summary).lower()
+                        # Extract the longest available content block or summary
+                        raw_content = ""
+                        if hasattr(entry, 'content') and entry.content:
+                            raw_content = entry.content[0].get('value', '')
+                        elif hasattr(entry, 'summary'):
+                            raw_content = entry.summary
+                        elif hasattr(entry, 'description'):
+                            raw_content = entry.description
+                            
+                        body_text = clean_html(raw_content)
+                        combined_text = (title + " " + body_text).lower()
                         
                         if any(kw in combined_text for kw in KEYWORDS):
                             location = detect_location(feed_url, combined_text)
                             
+                            # Maximize length safely under Telegram's 4096 char limit
+                            max_body_length = 3200
+                            if len(body_text) > max_body_length:
+                                body_text = body_text[:max_body_length] + "..."
+                            
                             message = (
                                 f"🚨 <b>{location} Alert</b>\n\n"
                                 f"<b>{title}</b>\n\n"
-                                f"{summary}\n\n"
-                                f"<a href='{link}'>Read full story</a>"
+                                f"{body_text}\n\n"
+                                f"<a href='{link}'>Read full story on site</a>"
                             )
                             
                             send_telegram_message(message)
