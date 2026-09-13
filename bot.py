@@ -49,6 +49,26 @@ LOCATION_KEYWORDS = {
     "bbci.co.uk": "National UK"
 }
 
+# ---------------------------------------------------------
+# VERIFIED DIRECT IMAGE LINKS FOR EACH REGION/CITY
+# ---------------------------------------------------------
+CUSTOM_LOCATION_IMAGES = {
+    "London": "https://images.unsplash.com/photo-1513635269975-59663e0ac1ad?w=1200",
+    "Manchester": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8a/Manchester_Skyline_2018.jpg/1280px-Manchester_Skyline_2018.jpg",
+    "Liverpool": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4e/Albert_Dock_and_big_wheel%2C_Liverpool.jpg/1280px-Albert_Dock_and_big_wheel%2C_Liverpool.jpg",
+    "Leeds": "https://images.unsplash.com/photo-1621570147414-236b2809fddf?w=1200",
+    "Newcastle": "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=1200",
+    "Glasgow": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5e/Glasgow_%28Unsplash%29.jpg/1280px-Glasgow_%28Unsplash%29.jpg",
+    "Edinburgh": "https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?w=1200",
+    "Birmingham": "https://images.unsplash.com/photo-1593152167544-085dd8e342b0?w=1200",
+    "Nottingham": "https://images.unsplash.com/photo-1618588507085-c79565432917?w=1200",
+    "Sunderland": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f6/Stadium_of_Light%2C_Sunderland_-_geograph.org.uk_-_5813943.jpg/1280px-Stadium_of_Light%2C_Sunderland_-_geograph.org.uk_-_5813943.jpg",
+    "Leicester": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d7/Leicester_Clock_Tower_wide_view.jpg/1280px-Leicester_Clock_Tower_wide_view.jpg",
+    "UK Courts": "https://images.unsplash.com/photo-1589829545856-d10d557cf95f?w=1200",
+    "National UK": "https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=1200",
+    "UK": "https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=1200"
+}
+
 def init_db():
     conn = sqlite3.connect("news_bot.db")
     cursor = conn.cursor()
@@ -101,23 +121,14 @@ def detect_location(feed_url, text):
             return city.capitalize()
     return "UK"
 
-def scrape_article_data(url):
-    """Scrapes the actual article image and full body text from the webpage."""
-    body_text = ""
-    image_url = None
+def scrape_full_article(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extract actual article main image
-            og_image = soup.find('meta', property='og:image')
-            if og_image and og_image.get('content'):
-                image_url = og_image['content']
-            
-            # Extract body text paragraphs
             body_container = soup.find('div', class_=lambda x: x and ('article-body' in x or 'story-body' in x or 'content-body' in x))
+            
             if body_container:
                 paragraphs = body_container.find_all('p')
             else:
@@ -132,14 +143,15 @@ def scrape_article_data(url):
                 if len(text) > 30 and not any(bp in text.lower() for bp in boilerplate_phrases):
                     clean_paragraphs.append(text)
                     
-            body_text = "\n\n".join(clean_paragraphs)
+            return "\n\n".join(clean_paragraphs)
     except Exception as e:
         print(f"Scraping error for {url}: {e}")
-        
-    return body_text, image_url
+    return ""
 
-def send_real_article_card(location, emoji, title, summary, body_text, image_url, link):
+def send_custom_boxed_card(location, emoji, title, summary, body_text, link):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    
+    chosen_image = CUSTOM_LOCATION_IMAGES.get(location, CUSTOM_LOCATION_IMAGES["UK"])
     
     caption = (
         f"{emoji} <b>UK NEWS FEED | {location} Alert</b>\n\n"
@@ -158,12 +170,9 @@ def send_real_article_card(location, emoji, title, summary, body_text, image_url
         ]
     }
 
-    # Fallback to a clean news placeholder if the article page didn't expose an open-graph image
-    fallback_image = "https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=800"
-
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "photo": image_url if image_url else fallback_image,
+        "photo": chosen_image,
         "caption": caption,
         "parse_mode": "HTML",
         "reply_markup": reply_markup
@@ -177,7 +186,7 @@ def send_real_article_card(location, emoji, title, summary, body_text, image_url
 
 def run_bot():
     init_db()
-    print("Bot started with Real Article Image scraping...")
+    print("Bot started with custom location picture mappings...")
     while True:
         print("Scanning feeds for new updates...")
         for feed_url in RSS_FEEDS:
@@ -198,11 +207,10 @@ def run_bot():
                             location = detect_location(feed_url, combined_text)
                             emoji = get_dynamic_emoji(combined_text)
                             
-                            body_text, image_url = scrape_article_data(link)
-                            if not body_text:
-                                body_text = "<i>Full text could not be scraped.</i>"
+                            scraped_body = scrape_full_article(link)
+                            body_text = scraped_body if scraped_body else "<i>Full text could not be scraped.</i>"
                             
-                            send_real_article_card(location, emoji, title, summary, body_text, image_url, link)
+                            send_custom_boxed_card(location, emoji, title, summary, body_text, link)
                             print(f"Alert posted [{location}]: {title}")
                             time.sleep(1)
             except Exception as e:
