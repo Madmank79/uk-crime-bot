@@ -23,7 +23,7 @@ RSS_FEEDS = [
     "https://www.leicestermercury.co.uk/news/?service=rss"
 ]
 
-# Expanded Keyword List including your new additions
+# Expanded Keyword List including your additions
 KEYWORDS = [
     # Original legal/court & crime terms
     "court", "trial", "judge", "sentence", "prison", "hearing", 
@@ -105,7 +105,14 @@ def run_bot():
                         
                         if any(kw in combined_text for kw in KEYWORDS):
                             location = detect_location(feed_url, combined_text)
-                            message = f"🚨 <b>{location} Alert</b>\n\n<b>{title}</b>\n\n{link}"
+                            
+                            message = (
+                                f"🚨 <b>{location} Alert</b>\n\n"
+                                f"<b>{title}</b>\n\n"
+                                f"{summary}\n\n"
+                                f"<a href='{link}'>Read full story</a>"
+                            )
+                            
                             send_telegram_message(message)
                             print(f"Alert posted [{location}]: {title}")
                             time.sleep(1)
