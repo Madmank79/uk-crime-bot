@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import re
 import feedparser
 import requests
@@ -25,21 +26,17 @@ RSS_FEEDS = [
     "https://www.leicestermercury.co.uk/news/?service=rss"
 ]
 
-# Expanded Keyword List including your additions
 KEYWORDS = [
-    # Original legal/court & crime terms
     "court", "trial", "judge", "sentence", "prison", "hearing", 
     "inquest", "crime", "jury", "offense", "offence",
     "robbery", "fight", "attack", "knife", "rape", "assault", "race", 
     "hurt", "punch", "gun", "stabbing", "murder", "machete", "brawl", 
     "gang", "shooting", "arrest", "charged", "investigation", "weapon", 
     "thief", "burglary", "cops", "detectives", "tragedy", "tragic", "hotspot",
-    # User-added terms
     "rightwing", "leftwing", "just in", "breaking news", 
     "sex attack", "counter fit", "counterfeit", "police"
 ]
 
-# Map feed sources or locations to readable labels
 LOCATION_KEYWORDS = {
     "manchestereveningnews": "Manchester",
     "leeds-live": "Leeds",
@@ -75,13 +72,11 @@ def detect_location(feed_url, text):
     return "UK"
 
 def scrape_full_article(url):
-    """Scrapes the live article page to extract the full body text."""
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            
             body_container = soup.find('div', class_=lambda x: x and ('article-body' in x or 'story-body' in x or 'content-body' in x))
             
             if body_container:
@@ -97,13 +92,36 @@ def scrape_full_article(url):
         print(f"Scraping error for {url}: {e}")
     return ""
 
-def send_telegram_message(text):
+def send_telegram_card(location, title, summary, body_text, link):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    
+    # Structure the message with title, summary, and full extracted text clearly separated
+    message = (
+        f"🚨 <b>{location} Alert</b>\n\n"
+        f"<b>{title}</b>\n\n"
+        f"<b>Summary:</b> {summary}\n\n"
+        f"-----------------------------------\n"
+        f"<b>Full Story:</b>\n{body_text}"
+    )
+    
+    # Ensure it fits Telegram's 4096 character limit
+    if len(message) > 4000:
+        message = message[:3950] + "...\n\n<i>[Message truncated due to length]</i>"
+
+    # Add an inline button for the clean web link at the bottom
+    reply_markup = {
+        "inline_keyboard": [
+            [{"text": "🌐 Open Original Web Article", "url": link}]
+        ]
+    }
+
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML"
+        "text": message,
+        "parse_mode": "HTML",
+        "reply_markup": json.dumps(reply_markup)
     }
+    
     try:
         response = requests.post(url, data=payload)
         return response.json()
@@ -133,24 +151,9 @@ def run_bot():
                             
                             # Scrape full text
                             scraped_body = scrape_full_article(link)
-                            body_text = scraped_body if scraped_body else summary
+                            body_text = scraped_body if scraped_body else "<i>Full text could not be scraped. Check link below.</i>"
                             
-                            # Character limit safety check
-                            max_body_length = 3200
-                            if len(body_text) > max_body_length:
-                                body_text = body_text[:max_body_length] + "..."
-                            
-                            # REVERSED ORDER: Location & Title first, then Summary/Body, then Link
-                            message = (
-                                f"🚨 <b>{location} Alert</b>\n\n"
-                                f"<b>{title}</b>\n\n"
-                                f"{summary}\n\n"
-                                f"-----------------------------------\n"
-                                f"{body_text}\n\n"
-                                f"<a href='{link}'>Read original story</a>"
-                            )
-                            
-                            send_telegram_message(message)
+                            send_telegram_card(location, title, summary, body_text, link)
                             print(f"Alert posted [{location}]: {title}")
                             time.sleep(1)
             except Exception as e:
