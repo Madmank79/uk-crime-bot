@@ -94,15 +94,14 @@ def scrape_full_article(url):
 def send_telegram_message(location, title, summary, body_text, link):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
-    # Structure: Title and short summary first (which triggers the picture preview card), 
-    # followed by the full scraped article text underneath.
+    # Placing the link at the very top forces Telegram to put the image preview card at the top.
     message = (
+        f"{link}\n\n"
         f"🚨 <b>{location} Alert</b>\n\n"
         f"<b>{title}</b>\n\n"
         f"{summary}\n\n"
         f"-----------------------------------\n"
-        f"<b>Full Article:</b>\n{body_text}\n\n"
-        f"<a href='{link}'>Read original story</a>"
+        f"<b>Full Article:</b>\n{body_text}"
     )
     
     if len(message) > 4000:
