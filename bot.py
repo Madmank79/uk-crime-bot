@@ -1,6 +1,5 @@
 import os
 import time
-import json
 import re
 import feedparser
 import requests
@@ -92,34 +91,27 @@ def scrape_full_article(url):
         print(f"Scraping error for {url}: {e}")
     return ""
 
-def send_telegram_card(location, title, summary, body_text, link):
+def send_telegram_message(location, title, summary, body_text, link):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
-    # Structure the message with title, summary, and full extracted text clearly separated
+    # Structure: Title and short summary first (which triggers the picture preview card), 
+    # followed by the full scraped article text underneath.
     message = (
         f"🚨 <b>{location} Alert</b>\n\n"
         f"<b>{title}</b>\n\n"
-        f"<b>Summary:</b> {summary}\n\n"
+        f"{summary}\n\n"
         f"-----------------------------------\n"
-        f"<b>Full Story:</b>\n{body_text}"
+        f"<b>Full Article:</b>\n{body_text}\n\n"
+        f"<a href='{link}'>Read original story</a>"
     )
     
-    # Ensure it fits Telegram's 4096 character limit
     if len(message) > 4000:
-        message = message[:3950] + "...\n\n<i>[Message truncated due to length]</i>"
-
-    # Add an inline button for the clean web link at the bottom
-    reply_markup = {
-        "inline_keyboard": [
-            [{"text": "🌐 Open Original Web Article", "url": link}]
-        ]
-    }
+        message = message[:3950] + "...\n\n<i>[Truncated]</i>"
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
-        "parse_mode": "HTML",
-        "reply_markup": json.dumps(reply_markup)
+        "parse_mode": "HTML"
     }
     
     try:
@@ -151,9 +143,9 @@ def run_bot():
                             
                             # Scrape full text
                             scraped_body = scrape_full_article(link)
-                            body_text = scraped_body if scraped_body else "<i>Full text could not be scraped. Check link below.</i>"
+                            body_text = scraped_body if scraped_body else "<i>Full text could not be scraped.</i>"
                             
-                            send_telegram_card(location, title, summary, body_text, link)
+                            send_telegram_message(location, title, summary, body_text, link)
                             print(f"Alert posted [{location}]: {title}")
                             time.sleep(1)
             except Exception as e:
