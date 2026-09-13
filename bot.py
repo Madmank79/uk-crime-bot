@@ -1,4 +1,3 @@
-
 import os
 import time
 import re
@@ -70,23 +69,14 @@ def detect_location(feed_url, text):
             
     return "UK"
 
-def scrape_article_data(url):
-    """Scrapes the full text body and the main article image URL."""
-    body_text = ""
-    image_url = None
+def scrape_full_article(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extract main image (OpenGraph meta tag)
-            og_image = soup.find('meta', property='og:image')
-            if og_image and og_image.get('content'):
-                image_url = og_image['content']
-            
-            # Extract body text
             body_container = soup.find('div', class_=lambda x: x and ('article-body' in x or 'story-body' in x or 'content-body' in x))
+            
             if body_container:
                 paragraphs = body_container.find_all('p')
             else:
@@ -94,56 +84,44 @@ def scrape_article_data(url):
                 paragraphs = main_tag.find_all('p')
                 
             clean_paragraphs = [p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 30]
-            body_text = "\n\n".join(clean_paragraphs)
+            full_text = "\n\n".join(clean_paragraphs)
+            return full_text
     except Exception as e:
         print(f"Scraping error for {url}: {e}")
-        
-    return body_text, image_url
+    return ""
 
-def send_telegram_post(location, title, summary, body_text, image_url, link):
-    # 1. Send Photo + Title/Summary as caption (Picture at the very top)
-    photo_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    caption = (
+def send_telegram_single_message(location, title, summary, body_text, link):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    
+    message = (
         f"🚨 <b>{location} Alert</b>\n\n"
         f"<b>{title}</b>\n\n"
-        f"{summary}"
+        f"{summary}\n\n"
+        f"-----------------------------------\n"
+        f"<b>Full Article:</b>\n{body_text}"
     )
-    if len(caption) > 1024:  # Telegram caption limit
-        caption = caption[:1020] + "..."
+    
+    if len(message) > 4000:
+        message = message[:3950] + "...\n\n<i>[Truncated]</i>"
 
-    photo_payload = {
+    # Using link_preview_options with show_above_text forces the main article image 
+    # to render cleanly at the very top of a single message block.
+    payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "photo": image_url if image_url else "https://via.placeholder.com/600x400.png?text=News+Alert",
-        "caption": caption,
-        "parse_mode": "HTML"
+        "text": message,
+        "parse_mode": "HTML",
+        "link_preview_options": {
+            "url": link,
+            "prefer_large_media": True,
+            "show_above_text": True
+        }
     }
     
     try:
-        requests.post(photo_url, data=photo_payload)
-        time.sleep(0.5)
+        response = requests.post(url, json=payload)
+        return response.json()
     except Exception as e:
-        print(f"Error sending photo: {e}")
-
-    # 2. Send Full Article Text right below it as a second message
-    message_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    full_message = (
-        f"<b>Full Article:</b>\n\n{body_text}\n\n"
-        f"<a href='{link}'>Read original story</a>"
-    )
-    
-    if len(full_message) > 4000:
-        full_message = full_message[:3950] + "...\n\n<i>[Truncated]</i>"
-
-    text_payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": full_message,
-        "parse_mode": "HTML"
-    }
-    
-    try:
-        requests.post(message_url, data=text_payload)
-    except Exception as e:
-        print(f"Error sending text body: {e}")
+        print(f"Error sending telegram message: {e}")
 
 def run_bot():
     print("Bot started. Running loop...")
@@ -166,12 +144,11 @@ def run_bot():
                         if any(kw in combined_text for kw in KEYWORDS):
                             location = detect_location(feed_url, combined_text)
                             
-                            # Scrape full body text and main image
-                            body_text, image_url = scrape_article_data(link)
-                            if not body_text:
-                                body_text = "<i>Full text could not be scraped.</i>"
+                            # Scrape full text
+                            scraped_body = scrape_full_article(link)
+                            body_text = scraped_body if scraped_body else "<i>Full text could not be scraped.</i>"
                             
-                            send_telegram_post(location, title, summary, body_text, image_url, link)
+                            send_telegram_single_message(location, title, summary, body_text, link)
                             print(f"Alert posted [{location}]: {title}")
                             time.sleep(1)
             except Exception as e:
