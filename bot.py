@@ -1,11 +1,10 @@
 import os
 import time
-import re
+import sqlite3
 import feedparser
 import requests
 from bs4 import BeautifulSoup
 
-# Configuration from Railway Environment Variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -50,7 +49,41 @@ LOCATION_KEYWORDS = {
     "bbci.co.uk": "National UK"
 }
 
-seen_articles = set()
+def init_db():
+    conn = sqlite3.connect("news_bot.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS seen_articles (
+            article_id TEXT PRIMARY KEY
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def is_seen(article_id):
+    conn = sqlite3.connect("news_bot.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM seen_articles WHERE article_id = ?", (article_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result is not None
+
+def mark_as_seen(article_id):
+    conn = sqlite3.connect("news_bot.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO seen_articles (article_id) VALUES (?)", (article_id,))
+    conn.commit()
+    conn.close()
+
+def get_dynamic_emoji(text):
+    text_lower = text.lower()
+    if any(w in text_lower for w in ["court", "judge", "sentence", "prison", "hearing", "trial"]):
+        return "⚖️"
+    elif any(w in text_lower for w in ["knife", "stabbing", "weapon", "gun", "shooting", "machete"]):
+        return "🔪"
+    elif any(w in text_lower for w in ["murder", "tragedy", "tragic", "death", "killed"]):
+        return "⚠️"
+    return "🚨"
 
 def detect_location(feed_url, text):
     for domain, loc in LOCATION_KEYWORDS.items():
@@ -66,7 +99,6 @@ def detect_location(feed_url, text):
     for city in cities:
         if city in text_lower:
             return city.capitalize()
-            
     return "UK"
 
 def scrape_full_article(url):
@@ -83,18 +115,24 @@ def scrape_full_article(url):
                 main_tag = soup.find('main') or soup.find('article') or soup
                 paragraphs = main_tag.find_all('p')
                 
-            clean_paragraphs = [p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 30]
-            full_text = "\n\n".join(clean_paragraphs)
-            return full_text
+            clean_paragraphs = []
+            boilerplate_phrases = ["preferred source", "google news", "sign up", "newsletter", "cookie policy"]
+            
+            for p in paragraphs:
+                text = p.get_text().strip()
+                if len(text) > 30 and not any(bp in text.lower() for bp in boilerplate_phrases):
+                    clean_paragraphs.append(text)
+                    
+            return "\n\n".join(clean_paragraphs)
     except Exception as e:
         print(f"Scraping error for {url}: {e}")
     return ""
 
-def send_telegram_single_message(location, title, summary, body_text, link):
+def send_telegram_single_message(location, emoji, title, summary, body_text, link):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
     message = (
-        f"🚨 <b>{location} Alert</b>\n\n"
+        f"{emoji} <b>{location} Alert</b>\n\n"
         f"<b>{title}</b>\n\n"
         f"{summary}\n\n"
         f"-----------------------------------\n"
@@ -104,8 +142,6 @@ def send_telegram_single_message(location, title, summary, body_text, link):
     if len(message) > 4000:
         message = message[:3950] + "...\n\n<i>[Truncated]</i>"
 
-    # Using link_preview_options with show_above_text forces the main article image 
-    # to render cleanly at the very top of a single message block.
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
@@ -124,7 +160,8 @@ def send_telegram_single_message(location, title, summary, body_text, link):
         print(f"Error sending telegram message: {e}")
 
 def run_bot():
-    print("Bot started. Running loop...")
+    init_db()
+    print("Bot started with SQLite persistence and dynamic features...")
     while True:
         print("Scanning feeds for new updates...")
         for feed_url in RSS_FEEDS:
@@ -135,20 +172,20 @@ def run_bot():
                     title = entry.title
                     link = entry.link
 
-                    if article_id not in seen_articles:
-                        seen_articles.add(article_id)
+                    if not is_seen(article_id):
+                        mark_as_seen(article_id)
                         
                         summary = entry.summary if 'summary' in entry else ""
                         combined_text = (title + " " + summary).lower()
                         
                         if any(kw in combined_text for kw in KEYWORDS):
                             location = detect_location(feed_url, combined_text)
+                            emoji = get_dynamic_emoji(combined_text)
                             
-                            # Scrape full text
                             scraped_body = scrape_full_article(link)
                             body_text = scraped_body if scraped_body else "<i>Full text could not be scraped.</i>"
                             
-                            send_telegram_single_message(location, title, summary, body_text, link)
+                            send_telegram_single_message(location, emoji, title, summary, body_text, link)
                             print(f"Alert posted [{location}]: {title}")
                             time.sleep(1)
             except Exception as e:
