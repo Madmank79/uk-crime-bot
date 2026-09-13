@@ -2,12 +2,21 @@ import os
 import time
 import feedparser
 import requests
+import tweepy
 
 # Configuration from Railway Environment Variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Comprehensive List of RSS Feeds (National news, Courts, and Regional UK feeds)
+# Initialize X (Twitter) Client
+x_client = tweepy.Client(
+    consumer_key=os.getenv("X_CONSUMER_KEY"),
+    consumer_secret=os.getenv("X_CONSUMER_SECRET"),
+    access_token=os.getenv("X_ACCESS_TOKEN"),
+    access_token_secret=os.getenv("X_ACCESS_TOKEN_SECRET")
+)
+
+# Comprehensive List of RSS Feeds
 RSS_FEEDS = [
     "https://feeds.bbci.co.uk/news/uk/rss.xml",
     "https://www.judiciary.uk/rss-feeds/",
@@ -23,21 +32,18 @@ RSS_FEEDS = [
     "https://www.leicestermercury.co.uk/news/?service=rss"
 ]
 
-# Expanded Keyword List including your new additions
+# Keyword List
 KEYWORDS = [
-    # Original legal/court & crime terms
     "court", "trial", "judge", "sentence", "prison", "hearing", 
     "inquest", "crime", "jury", "offense", "offence",
     "robbery", "fight", "attack", "knife", "rape", "assault", "race", 
     "hurt", "punch", "gun", "stabbing", "murder", "machete", "brawl", 
     "gang", "shooting", "arrest", "charged", "investigation", "weapon", 
     "thief", "burglary", "cops", "detectives", "tragedy", "tragic", "hotspot",
-    # User-added terms
     "rightwing", "leftwing", "just in", "breaking news", 
     "sex attack", "counter fit", "counterfeit", "police"
 ]
 
-# Map feed sources or locations to readable labels
 LOCATION_KEYWORDS = {
     "manchestereveningnews": "Manchester",
     "leeds-live": "Leeds",
@@ -85,6 +91,12 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"Error sending telegram message: {e}")
 
+def post_to_x(text):
+    try:
+        x_client.create_tweet(text=text)
+    except Exception as e:
+        print(f"Error posting to X: {e}")
+
 def run_bot():
     print("Bot started. Running loop...")
     while True:
@@ -105,10 +117,13 @@ def run_bot():
                         
                         if any(kw in combined_text for kw in KEYWORDS):
                             location = detect_location(feed_url, combined_text)
-                            message = f"🚨 <b>{location} Alert</b>\n\n<b>{title}</b>\n\n{link}"
+                            message = f"🚨 {location} Alert\n\n{title}\n\n{link}"
+                            
                             send_telegram_message(message)
+                            post_to_x(message)
+                            
                             print(f"Alert posted [{location}]: {title}")
-                            time.sleep(1)
+                            time.sleep(2)
             except Exception as e:
                 print(f"Error parsing feed {feed_url}: {e}")
                 
