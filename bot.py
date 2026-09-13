@@ -49,24 +49,6 @@ LOCATION_KEYWORDS = {
     "bbci.co.uk": "National UK"
 }
 
-# Dedicated landmark images or GIFs for each location banner card
-LOCATION_IMAGES = {
-    "London": "https://images.unsplash.com/photo-1513635269975-59663e0ac1ad?w=800", # Big Ben / London
-    "Manchester": "https://images.unsplash.com/photo-1511527844068-0466e12463e7?w=800", # Manchester skyline
-    "Liverpool": "https://images.unsplash.com/photo-1605648916361-9bc12ad6a569?w=800", # Liverpool waterfront
-    "Leeds": "https://images.unsplash.com/photo-1621570147414-236b2809fddf?w=800", # Leeds view
-    "Newcastle": "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=800", # Tyne Bridge / Newcastle
-    "Glasgow": "https://images.unsplash.com/photo-1596422846543-75c6fc197f07?w=800", # Glasgow architecture
-    "Edinburgh": "https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?w=800", # Edinburgh castle
-    "Birmingham": "https://images.unsplash.com/photo-1593152167544-085dd8e342b0?w=800", # Birmingham
-    "Nottingham": "https://images.unsplash.com/photo-1618588507085-c79565432917?w=800",
-    "Sunderland": "https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=800",
-    "Leicester": "https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=800",
-    "UK Courts": "https://images.unsplash.com/photo-1589829545856-d10d557cf95f?w=800", # Gavel / Courts
-    "National UK": "https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=800", # UK News desk generic
-    "UK": "https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?w=800"
-}
-
 def init_db():
     conn = sqlite3.connect("news_bot.db")
     cursor = conn.cursor()
@@ -119,14 +101,23 @@ def detect_location(feed_url, text):
             return city.capitalize()
     return "UK"
 
-def scrape_full_article(url):
+def scrape_article_data(url):
+    """Scrapes the actual article image and full body text from the webpage."""
+    body_text = ""
+    image_url = None
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            body_container = soup.find('div', class_=lambda x: x and ('article-body' in x or 'story-body' in x or 'content-body' in x))
             
+            # Extract actual article main image
+            og_image = soup.find('meta', property='og:image')
+            if og_image and og_image.get('content'):
+                image_url = og_image['content']
+            
+            # Extract body text paragraphs
+            body_container = soup.find('div', class_=lambda x: x and ('article-body' in x or 'story-body' in x or 'content-body' in x))
             if body_container:
                 paragraphs = body_container.find_all('p')
             else:
@@ -141,18 +132,15 @@ def scrape_full_article(url):
                 if len(text) > 30 and not any(bp in text.lower() for bp in boilerplate_phrases):
                     clean_paragraphs.append(text)
                     
-            return "\n\n".join(clean_paragraphs)
+            body_text = "\n\n".join(clean_paragraphs)
     except Exception as e:
         print(f"Scraping error for {url}: {e}")
-    return ""
+        
+    return body_text, image_url
 
-def send_location_boxed_card(location, emoji, title, summary, body_text, link):
+def send_real_article_card(location, emoji, title, summary, body_text, image_url, link):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     
-    # Pick the landmark image based on location, fallback to UK default
-    banner_image = LOCATION_IMAGES.get(location, LOCATION_IMAGES["UK"])
-    
-    # Combine title, summary, and full article into a clean boxed card caption layout
     caption = (
         f"{emoji} <b>UK NEWS FEED | {location} Alert</b>\n\n"
         f"<b>{title}</b>\n\n"
@@ -161,20 +149,21 @@ def send_location_boxed_card(location, emoji, title, summary, body_text, link):
         f"<b>Full Article:</b>\n{body_text}"
     )
     
-    # Telegram caption hard limit is 1024 characters
     if len(caption) > 1020:
         caption = caption[:1000] + "...\n\n<i>[Truncated for length]</i>"
 
-    # Inline button mimicking the crypto bot style card button
     reply_markup = {
         "inline_keyboard": [
             [{"text": "🌐 Open Original Web Article", "url": link}]
         ]
     }
 
+    # Fallback to a clean news placeholder if the article page didn't expose an open-graph image
+    fallback_image = "https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=800"
+
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "photo": banner_image,
+        "photo": image_url if image_url else fallback_image,
         "caption": caption,
         "parse_mode": "HTML",
         "reply_markup": reply_markup
@@ -188,7 +177,7 @@ def send_location_boxed_card(location, emoji, title, summary, body_text, link):
 
 def run_bot():
     init_db()
-    print("Bot started with Location-Based Landmark Card formatting...")
+    print("Bot started with Real Article Image scraping...")
     while True:
         print("Scanning feeds for new updates...")
         for feed_url in RSS_FEEDS:
@@ -209,10 +198,11 @@ def run_bot():
                             location = detect_location(feed_url, combined_text)
                             emoji = get_dynamic_emoji(combined_text)
                             
-                            scraped_body = scrape_full_article(link)
-                            body_text = scraped_body if scraped_body else "<i>Full text could not be scraped.</i>"
+                            body_text, image_url = scrape_article_data(link)
+                            if not body_text:
+                                body_text = "<i>Full text could not be scraped.</i>"
                             
-                            send_location_boxed_card(location, emoji, title, summary, body_text, link)
+                            send_real_article_card(location, emoji, title, summary, body_text, image_url, link)
                             print(f"Alert posted [{location}]: {title}")
                             time.sleep(1)
             except Exception as e:
@@ -222,4 +212,3 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
-
