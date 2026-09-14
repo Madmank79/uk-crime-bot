@@ -4,6 +4,8 @@ import sqlite3
 import feedparser
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime
+import random
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -48,6 +50,28 @@ LOCATION_KEYWORDS = {
     "judiciary.uk": "UK Courts",
     "bbci.co.uk": "National UK"
 }
+
+# === ORACLE SETTINGS ===
+ORACLE_ENABLED = True
+last_oracle_hour = None          # tracks the last hour we posted
+
+ORACLE_PREDICTIONS = [
+    "The next hour will bring movement in the shadows… watch the quiet ones.",
+    "Something unexpected is already on its way. Stay sharp.",
+    "A small decision made this hour will echo louder than you think.",
+    "Keep your eyes open — the next 60 minutes belong to the unexpected.",
+    "Old patterns are about to break. The next hour is a reset.",
+    "Someone is about to reveal more than they intended.",
+    "The atmosphere is shifting. Act before the window closes.",
+    "A message, a glance, or a silence will change the tone of the next hour.",
+    "What feels stuck is about to move. Be ready.",
+    "The next hour favours those who stay calm under pressure.",
+    "An opportunity will appear disguised as inconvenience.",
+    "Trust the strange feeling. It’s accurate this time.",
+    "The next 60 minutes will reward curiosity over caution.",
+    "Something you almost ignored is the key to the next hour.",
+    "A quiet hour that rearranges everything underneath."
+]
 
 def init_db():
     conn = sqlite3.connect("news_bot.db")
@@ -159,10 +183,55 @@ def send_telegram_single_message(location, emoji, title, summary, body_text, lin
     except Exception as e:
         print(f"Error sending telegram message: {e}")
 
+def send_oracle():
+    """Post a random picture + prediction every hour on the hour"""
+    try:
+        # Random image from Picsum (no key needed)
+        seed = random.randint(1, 999999)
+        image_url = f"https://picsum.photos/seed/{seed}/800/600"
+        
+        prediction = random.choice(ORACLE_PREDICTIONS)
+        now = datetime.now().strftime("%H:%M")
+        
+        caption = (
+            f"🔮 <b>Hourly Oracle — {now}</b>\n\n"
+            f"{prediction}"
+        )
+        
+        # Send as photo
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "photo": image_url,
+            "caption": caption,
+            "parse_mode": "HTML"
+        }
+        
+        response = requests.post(url, json=payload, timeout=15)
+        if response.status_code == 200:
+            print(f"Oracle posted at {now}")
+        else:
+            print(f"Oracle failed: {response.text}")
+            
+    except Exception as e:
+        print(f"Oracle error: {e}")
+
 def run_bot():
+    global last_oracle_hour
     init_db()
-    print("Bot started with SQLite persistence and dynamic features...")
+    print("Bot started with SQLite + Hourly Oracle...")
+    
     while True:
+        now = datetime.now()
+        current_hour = now.hour
+        
+        # === HOURLY ORACLE ===
+        if ORACLE_ENABLED and current_hour != last_oracle_hour and now.minute < 2:
+            # Only fire in the first 2 minutes of the new hour (avoids missing it)
+            send_oracle()
+            last_oracle_hour = current_hour
+        
+        # === NORMAL CRIME SCAN ===
         print("Scanning feeds for new updates...")
         for feed_url in RSS_FEEDS:
             try:
@@ -191,8 +260,7 @@ def run_bot():
             except Exception as e:
                 print(f"Error parsing feed {feed_url}: {e}")
                 
-        time.sleep(300)
+        time.sleep(300)   # still every 5 minutes
 
 if __name__ == "__main__":
     run_bot()
-
