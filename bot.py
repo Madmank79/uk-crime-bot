@@ -156,30 +156,21 @@ def send_telegram_single_message(location, emoji, title, summary, body_text, lin
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
     if not body_text or body_text.strip() == "":
-        body_text = "<i>Full text could not be scraped.</i>"
+        body_text = "Full text could not be scraped."
     
-    # Full article hidden inside a spoiler
+    # Only a short preview goes into the spoiler (keeps message compact)
+    preview = body_text[:450].strip()
+    if len(body_text) > 450:
+        preview += "..."
+    
     message = (
         f"{emoji} <b>{location} Alert</b>\n\n"
         f"<b>{title}</b>\n\n"
         f"{summary}\n\n"
-        f"📖 <b>Full Article</b> (tap to expand):\n"
-        f"<span class=\"tg-spoiler\">{body_text}</span>"
+        f"📖 <b>Preview</b> (tap to expand):\n"
+        f"<span class=\"tg-spoiler\">{preview}</span>\n\n"
+        f"🔗 <a href=\"{link}\">Read full story</a>"
     )
-    
-    # Safety truncate if message is too long
-    if len(message) > 4090:
-        # Calculate how much space we have left for the body
-        fixed_part = (
-            f"{emoji} <b>{location} Alert</b>\n\n"
-            f"<b>{title}</b>\n\n"
-            f"{summary}\n\n"
-            f"📖 <b>Full Article</b> (tap to expand):\n"
-            f"<span class=\"tg-spoiler\">"
-        )
-        available = 4090 - len(fixed_part) - 10  # leave room for closing tag
-        body_text = body_text[:available] + "..."
-        message = fixed_part + body_text + "</span>"
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -232,7 +223,7 @@ def send_oracle():
 def run_bot():
     global last_oracle_hour
     init_db()
-    print("Bot started with SQLite + Hourly Oracle + Spoiler full articles...")
+    print("Bot started with compact spoiler + Read full story link...")
     
     while True:
         now = datetime.now()
@@ -264,7 +255,7 @@ def run_bot():
                             emoji = get_dynamic_emoji(combined_text)
                             
                             scraped_body = scrape_full_article(link)
-                            body_text = scraped_body if scraped_body else "<i>Full text could not be scraped.</i>"
+                            body_text = scraped_body if scraped_body else "Full text could not be scraped."
                             
                             send_telegram_single_message(location, emoji, title, summary, body_text, link)
                             print(f"Alert posted [{location}]: {title}")
