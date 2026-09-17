@@ -53,7 +53,7 @@ LOCATION_KEYWORDS = {
 
 # === ORACLE SETTINGS ===
 ORACLE_ENABLED = True
-last_oracle_hour = None          # tracks the last hour we posted
+last_oracle_hour = None
 
 ORACLE_PREDICTIONS = [
     "The next hour will bring movement in the shadows… watch the quiet ones.",
@@ -155,16 +155,31 @@ def scrape_full_article(url):
 def send_telegram_single_message(location, emoji, title, summary, body_text, link):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
+    if not body_text or body_text.strip() == "":
+        body_text = "<i>Full text could not be scraped.</i>"
+    
+    # Full article hidden inside a spoiler
     message = (
         f"{emoji} <b>{location} Alert</b>\n\n"
         f"<b>{title}</b>\n\n"
         f"{summary}\n\n"
-        f"-----------------------------------\n"
-        f"<b>Full Article:</b>\n{body_text}"
+        f"📖 <b>Full Article</b> (tap to expand):\n"
+        f"<span class=\"tg-spoiler\">{body_text}</span>"
     )
     
-    if len(message) > 4000:
-        message = message[:3950] + "...\n\n<i>[Truncated]</i>"
+    # Safety truncate if message is too long
+    if len(message) > 4090:
+        # Calculate how much space we have left for the body
+        fixed_part = (
+            f"{emoji} <b>{location} Alert</b>\n\n"
+            f"<b>{title}</b>\n\n"
+            f"{summary}\n\n"
+            f"📖 <b>Full Article</b> (tap to expand):\n"
+            f"<span class=\"tg-spoiler\">"
+        )
+        available = 4090 - len(fixed_part) - 10  # leave room for closing tag
+        body_text = body_text[:available] + "..."
+        message = fixed_part + body_text + "</span>"
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -178,7 +193,7 @@ def send_telegram_single_message(location, emoji, title, summary, body_text, lin
     }
     
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=15)
         return response.json()
     except Exception as e:
         print(f"Error sending telegram message: {e}")
@@ -186,7 +201,6 @@ def send_telegram_single_message(location, emoji, title, summary, body_text, lin
 def send_oracle():
     """Post a random picture + prediction every hour on the hour"""
     try:
-        # Random image from Picsum (no key needed)
         seed = random.randint(1, 999999)
         image_url = f"https://picsum.photos/seed/{seed}/800/600"
         
@@ -198,7 +212,6 @@ def send_oracle():
             f"{prediction}"
         )
         
-        # Send as photo
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
@@ -219,7 +232,7 @@ def send_oracle():
 def run_bot():
     global last_oracle_hour
     init_db()
-    print("Bot started with SQLite + Hourly Oracle...")
+    print("Bot started with SQLite + Hourly Oracle + Spoiler full articles...")
     
     while True:
         now = datetime.now()
@@ -227,7 +240,6 @@ def run_bot():
         
         # === HOURLY ORACLE ===
         if ORACLE_ENABLED and current_hour != last_oracle_hour and now.minute < 2:
-            # Only fire in the first 2 minutes of the new hour (avoids missing it)
             send_oracle()
             last_oracle_hour = current_hour
         
@@ -260,7 +272,7 @@ def run_bot():
             except Exception as e:
                 print(f"Error parsing feed {feed_url}: {e}")
                 
-        time.sleep(300)   # still every 5 minutes
+        time.sleep(300)   # every 5 minutes
 
 if __name__ == "__main__":
     run_bot()
