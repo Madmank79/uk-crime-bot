@@ -155,19 +155,11 @@ def scrape_full_article(url):
 def send_telegram_single_message(location, emoji, title, summary, body_text, link):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
-    if not body_text or body_text.strip() == "":
-        body_text = "Full text could not be scraped."
-    
-    # Very short preview → keeps the grey block small
-    preview = body_text[:160].strip()
-    if len(body_text) > 160:
-        preview += "..."
-
+    # Clean compact message - no spoiler
     message = (
         f"{emoji} <b>{location} Alert</b>\n\n"
         f"<b>{title}</b>\n\n"
         f"{summary}\n\n"
-        f"📖 <span class=\"tg-spoiler\">{preview}</span>\n\n"
         f"🔗 <a href=\"{link}\">Read full story</a>"
     )
 
@@ -222,7 +214,7 @@ def send_oracle():
 def run_bot():
     global last_oracle_hour
     init_db()
-    print("Bot started with small spoiler + Read full story link...")
+    print("Bot started - clean compact version (no spoiler)...")
     
     while True:
         now = datetime.now()
@@ -253,10 +245,8 @@ def run_bot():
                             location = detect_location(feed_url, combined_text)
                             emoji = get_dynamic_emoji(combined_text)
                             
-                            scraped_body = scrape_full_article(link)
-                            body_text = scraped_body if scraped_body else "Full text could not be scraped."
-                            
-                            send_telegram_single_message(location, emoji, title, summary, body_text, link)
+                            # We no longer need the full body for the message
+                            send_telegram_single_message(location, emoji, title, summary, "", link)
                             print(f"Alert posted [{location}]: {title}")
                             time.sleep(1)
             except Exception as e:
