@@ -7,8 +7,6 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import random
 import re
-from urllib.parse import urlparse
-import hashlib
 
 # --- CONFIGURATION ---
 CONFIG = {
@@ -20,11 +18,9 @@ CONFIG = {
     "MAX_RETRIES": 2
 }
 
-# Securely fetch secrets from environment variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# --- RSS FEEDS ---
 RSS_FEEDS = [
     "https://feeds.bbci.co.uk/news/uk/rss.xml",
     "https://www.judiciary.uk/rss-feeds/",
@@ -40,7 +36,6 @@ RSS_FEEDS = [
     "https://www.leicestermercury.co.uk/news/?service=rss"
 ]
 
-# --- KEYWORDS ---
 KEYWORDS = [
     "court", "trial", "judge", "sentence", "prison", "hearing", 
     "inquest", "crime", "jury", "offense", "offence",
@@ -50,13 +45,6 @@ KEYWORDS = [
     "thief", "burglary", "cops", "detectives", "tragedy", "tragic", "hotspot",
     "rightwing", "leftwing", "just in", "breaking news", 
     "sex attack", "counter fit", "counterfeit", "police", "assaulted", "murdered"
-]
-
-VOLATILE_DOMAINS = [
-    "manchestereveningnews.co.uk", "liverpoolecho.co.uk",
-    "chroniclelive.co.uk", "birminghammail.co.uk",
-    "leicestermercury.co.uk", "nottinghampost.com",
-    "leeds-live.co.uk", "glasgowlive.co.uk"
 ]
 
 LOCATION_KEYWORDS = {
@@ -74,7 +62,6 @@ LOCATION_KEYWORDS = {
     "bbci.co.uk": "National UK"
 }
 
-# === ORACLE SETTINGS ===
 ORACLE_PREDICTIONS = [
     "The next hour will bring movement in the shadows… watch the quiet ones.",
     "Something unexpected is already on its way. Stay sharp.",
@@ -198,22 +185,21 @@ def scrape_full_article(url):
             time.sleep(2)
     return ""
 
-def send_telegram_message(location, emoji, title, summary, body_text, link, is_update=False):
-    """Sends the alert header card and then posts the full article text cleanly right below it."""
+def send_telegram_message(location, emoji, title, summary, body_text, link):
+    """
+    1. Sends a clean short main alert (with image)
+    2. Posts the full free article as a REPLY to that message
+    """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
-    header = f"[{location}] Update" if is_update else f"[{location}] Breaking Alert"
     clean_title = BeautifulSoup(title, 'html.parser').get_text()
     
-    if not body_text or len(body_text.strip()) < 20:
-        body_text = "Full text could not be automatically scraped from this site."
-
-    # 1. Send the primary alert message with rich preview card
+    # === 1. MAIN CLEAN MESSAGE ===
     main_message = (
-        f"{emoji} <b>{header}</b>\n\n"
+        f"{emoji} <b>[{location}] Breaking Alert</b>\n\n"
         f"<b>{clean_title}</b>\n\n"
         f"<i>{clean_text(summary)}</i>\n\n"
-        f"🔗 <a href=\"{link}\">Original Source Link</a>"
+        f"🔗 <a href=\"{link}\">Original Source</a>"
     )
 
     payload = {
@@ -229,21 +215,34 @@ def send_telegram_message(location, emoji, title, summary, body_text, link, is_u
     
     try:
         response = requests.post(url, json=payload, timeout=15)
+        data = response.json()
         
-        # 2. Automatically follow up with the full article text broken into chunks
-        if body_text and len(body_text) > 20:
-            chunks = [body_text[i:i+4000] for i in range(0, len(body_text), 4000)]
+        if not data.get("ok"):
+            print("Failed to send main message:", data)
+            return
+        
+        # Get the message_id so we can reply to it
+        message_id = data["result"]["message_id"]
+        
+        # === 2. FULL FREE ARTICLE AS A REPLY ===
+        if body_text and len(body_text.strip()) > 30:
+            # Split into chunks if very long
+            chunks = [body_text[i:i+3900] for i in range(0, len(body_text), 3900)]
             
-            for chunk in chunks:
-                body_payload = {
-                    "chat_id": TELEGRAM_CHAT_ID,
-                    "text": f"📖 <b>Full Story:</b>\n\n{chunk}",
-                    "parse_mode": "HTML"
-                }
-                requests.post(url, json=body_payload, timeout=15)
-                time.sleep(0.5)
+            for i, chunk in enumerate(chunks):
+                reply_text = f"📖 <b>Full free story</b> (Part {i+1}/{len(chunks)}):\n\n{chunk}" if len(chunks) > 1 else f"📖 <b>Full free story:</b>\n\n{chunk}"
                 
-        return response.json()
+                reply_payload = {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": reply_text,
+                    "parse_mode": "HTML",
+                    "reply_to_message_id": message_id
+                }
+                requests.post(url, json=reply_payload, timeout=15)
+                time.sleep(0.4)
+                
+        return data
+        
     except Exception as e:
         print(f"Error sending telegram message: {e}")
 
@@ -275,7 +274,7 @@ def send_oracle():
 def run_bot():
     last_oracle_hour = None
     init_db()
-    print("Bot started with clean full-text delivery...")
+    print("Bot started - clean main card + full free article as reply...")
     
     while True:
         now = datetime.now()
