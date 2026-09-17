@@ -158,16 +158,17 @@ def send_telegram_single_message(location, emoji, title, summary, body_text, lin
     if not body_text or body_text.strip() == "":
         body_text = "Full text could not be scraped."
     
-    # Very short preview → keeps the grey block small
-    preview = body_text[:160].strip()
-    if len(body_text) > 160:
+    # Only a short preview goes into the spoiler (keeps message compact)
+    preview = body_text[:450].strip()
+    if len(body_text) > 450:
         preview += "..."
-
+    
     message = (
         f"{emoji} <b>{location} Alert</b>\n\n"
         f"<b>{title}</b>\n\n"
         f"{summary}\n\n"
-        f"📖 <span class=\"tg-spoiler\">{preview}</span>\n\n"
+        f"📖 <b>Preview</b> (tap to expand):\n"
+        f"<span class=\"tg-spoiler\">{preview}</span>\n\n"
         f"🔗 <a href=\"{link}\">Read full story</a>"
     )
 
@@ -222,7 +223,7 @@ def send_oracle():
 def run_bot():
     global last_oracle_hour
     init_db()
-    print("Bot started with small spoiler + Read full story link...")
+    print("Bot started with compact spoiler + Read full story link...")
     
     while True:
         now = datetime.now()
