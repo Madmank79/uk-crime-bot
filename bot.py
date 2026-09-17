@@ -6,25 +6,10 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 import random
-import re
-from urllib.parse import urlparse
-import hashlib
 
-# --- CONFIGURATION ---
-CONFIG = {
-    "DB_NAME": "uk_crime_bot.db",
-    "SCAN_INTERVAL_SECONDS": 600,
-    "USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "MIN_P_LENGTH": 60,
-    "ORACLE_ENABLED": True,
-    "MAX_RETRIES": 2
-}
-
-# Securely fetch secrets from environment variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# --- RSS FEEDS ---
 RSS_FEEDS = [
     "https://feeds.bbci.co.uk/news/uk/rss.xml",
     "https://www.judiciary.uk/rss-feeds/",
@@ -40,7 +25,6 @@ RSS_FEEDS = [
     "https://www.leicestermercury.co.uk/news/?service=rss"
 ]
 
-# --- KEYWORDS ---
 KEYWORDS = [
     "court", "trial", "judge", "sentence", "prison", "hearing", 
     "inquest", "crime", "jury", "offense", "offence",
@@ -49,14 +33,7 @@ KEYWORDS = [
     "gang", "shooting", "arrest", "charged", "investigation", "weapon", 
     "thief", "burglary", "cops", "detectives", "tragedy", "tragic", "hotspot",
     "rightwing", "leftwing", "just in", "breaking news", 
-    "sex attack", "counter fit", "counterfeit", "police", "assaulted", "murdered"
-]
-
-VOLATILE_DOMAINS = [
-    "manchestereveningnews.co.uk", "liverpoolecho.co.uk",
-    "chroniclelive.co.uk", "birminghammail.co.uk",
-    "leicestermercury.co.uk", "nottinghampost.com",
-    "leeds-live.co.uk", "glasgowlive.co.uk"
+    "sex attack", "counter fit", "counterfeit", "police"
 ]
 
 LOCATION_KEYWORDS = {
@@ -75,6 +52,9 @@ LOCATION_KEYWORDS = {
 }
 
 # === ORACLE SETTINGS ===
+ORACLE_ENABLED = True
+last_oracle_hour = None
+
 ORACLE_PREDICTIONS = [
     "The next hour will bring movement in the shadows… watch the quiet ones.",
     "Something unexpected is already on its way. Stay sharp.",
@@ -94,7 +74,7 @@ ORACLE_PREDICTIONS = [
 ]
 
 def init_db():
-    conn = sqlite3.connect(CONFIG["DB_NAME"])
+    conn = sqlite3.connect("news_bot.db")
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS seen_articles (
@@ -105,7 +85,7 @@ def init_db():
     conn.close()
 
 def is_seen(article_id):
-    conn = sqlite3.connect(CONFIG["DB_NAME"])
+    conn = sqlite3.connect("news_bot.db")
     cursor = conn.cursor()
     cursor.execute("SELECT 1 FROM seen_articles WHERE article_id = ?", (article_id,))
     result = cursor.fetchone()
@@ -113,7 +93,7 @@ def is_seen(article_id):
     return result is not None
 
 def mark_as_seen(article_id):
-    conn = sqlite3.connect(CONFIG["DB_NAME"])
+    conn = sqlite3.connect("news_bot.db")
     cursor = conn.cursor()
     cursor.execute("INSERT OR IGNORE INTO seen_articles (article_id) VALUES (?)", (article_id,))
     conn.commit()
@@ -121,18 +101,12 @@ def mark_as_seen(article_id):
 
 def get_dynamic_emoji(text):
     text_lower = text.lower()
-    if any(w in text_lower for w in ["murder", "killed", "homicide", "fatal"]):
-        return "💀"
-    elif any(w in text_lower for w in ["knife", "stabbing", "blade", "machete"]):
-        return "🔪"
-    elif any(w in text_lower for w in ["gun", "shooting", "firearm", "shot"]):
-        return "🔫"
-    elif any(w in text_lower for w in ["court", "judge", "sentence", "prison", "trial", "convicted"]):
+    if any(w in text_lower for w in ["court", "judge", "sentence", "prison", "hearing", "trial"]):
         return "⚖️"
-    elif any(w in text_lower for w in ["fight", "brawl", "attack"]):
-        return "👊"
-    elif any(w in text_lower for w in ["drug", "cocaine", "cannabis", "dealer"]):
-        return "💊"
+    elif any(w in text_lower for w in ["knife", "stabbing", "weapon", "gun", "shooting", "machete"]):
+        return "🔪"
+    elif any(w in text_lower for w in ["murder", "tragedy", "tragic", "death", "killed"]):
+        return "⚠️"
     return "🚨"
 
 def detect_location(feed_url, text):
@@ -144,81 +118,62 @@ def detect_location(feed_url, text):
     cities = [
         "manchester", "london", "glasgow", "edinburgh", "nottingham", 
         "newcastle", "sunderland", "birmingham", "leicester", "leeds", 
-        "liverpool", "cardiff", "belfast", "sheffield", "bristol", "york",
-        "bradford", "coventry", "hull", "stoke"
+        "liverpool", "cardiff", "belfast", "sheffield", "bristol"
     ]
-    cities.sort(key=len, reverse=True)
     for city in cities:
         if city in text_lower:
             return city.capitalize()
     return "UK"
 
-def clean_text(text):
-    text = re.sub(r'\s+', ' ', text).strip()
-    boilerplate = [
-        r'^get the latest north east headlines direct to your inbox',
-        r'^sign up to our newsletter',
-        r'^read more:',
-        r'^© \d{4}',
-        r'click here to subscribe'
-    ]
-    for pattern in boilerplate:
-        text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
-    return text
-
 def scrape_full_article(url):
-    retries = 0
-    while retries < CONFIG["MAX_RETRIES"]:
-        try:
-            headers = {"User-Agent": CONFIG["USER_AGENT"]}
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            body_container = soup.find('div', class_=lambda x: x and ('article-body' in x or 'story-body' in x or 'content-body' in x))
+            
+            if body_container:
+                paragraphs = body_container.find_all('p')
+            else:
+                main_tag = soup.find('main') or soup.find('article') or soup
+                paragraphs = main_tag.find_all('p')
                 
-                for tag in soup.select('script, style, header, footer, aside, .advertisement, .newsletter-signup, .social-embed'):
-                    tag.decompose()
-
-                body_container = soup.find('article') or soup.find('main') or soup.find('div', class_=lambda x: x and any(c in x for c in ['article-body', 'story-body', 'content-body', 'post-content']))
-                
-                if body_container:
-                    paragraphs = body_container.find_all('p')
-                else:
-                    paragraphs = soup.find_all('p')
+            clean_paragraphs = []
+            boilerplate_phrases = ["preferred source", "google news", "sign up", "newsletter", "cookie policy"]
+            
+            for p in paragraphs:
+                text = p.get_text().strip()
+                if len(text) > 30 and not any(bp in text.lower() for bp in boilerplate_phrases):
+                    clean_paragraphs.append(text)
                     
-                clean_paragraphs = []
-                for p in paragraphs:
-                    text = p.get_text().strip()
-                    if len(text) > CONFIG["MIN_P_LENGTH"] and not text.startswith(('Credit:', 'PA Wire', 'SWNS', 'Image:')):
-                        clean_paragraphs.append(clean_text(text))
-                        
-                return "\n\n".join(clean_paragraphs)
-        except Exception as e:
-            print(f"Scraping error for {url}: {e}")
-            retries += 1
-            time.sleep(2)
+            return "\n\n".join(clean_paragraphs)
+    except Exception as e:
+        print(f"Scraping error for {url}: {e}")
     return ""
 
-def send_telegram_message(location, emoji, title, summary, body_text, link, is_update=False):
-    """Sends the alert header card and then posts the full article text cleanly right below it."""
+def send_telegram_single_message(location, emoji, title, summary, body_text, link):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
-    header = f"[{location}] Update" if is_update else f"[{location}] Breaking Alert"
-    clean_title = BeautifulSoup(title, 'html.parser').get_text()
+    if not body_text or body_text.strip() == "":
+        body_text = "Full text could not be scraped."
     
-    if not body_text or len(body_text.strip()) < 20:
-        body_text = "Full text could not be automatically scraped from this site."
+    # Very short preview → keeps the grey block small
+    preview = body_text[:160].strip()
+    if len(body_text) > 160:
+        preview += "..."
 
-    # 1. Send the primary alert message with rich preview card
-    main_message = (
-        f"{emoji} <b>{header}</b>\n\n"
-        f"<b>{clean_title}</b>\n\n"
-        f"<i>{clean_text(summary)}</i>\n\n"
-        f"🔗 <a href=\"{link}\">Original Source Link</a>"
+    message = (
+        f"{emoji} <b>{location} Alert</b>\n\n"
+        f"<b>{title}</b>\n\n"
+        f"{summary}\n\n"
+        f"📖 <span class=\"tg-spoiler\">{preview}</span>\n\n"
+        f"🔗 <a href=\"{link}\">Read full story</a>"
     )
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": main_message,
+        "text": message,
         "parse_mode": "HTML",
         "link_preview_options": {
             "url": link,
@@ -229,32 +184,23 @@ def send_telegram_message(location, emoji, title, summary, body_text, link, is_u
     
     try:
         response = requests.post(url, json=payload, timeout=15)
-        
-        # 2. Automatically follow up with the full article text broken into chunks
-        if body_text and len(body_text) > 20:
-            chunks = [body_text[i:i+4000] for i in range(0, len(body_text), 4000)]
-            
-            for chunk in chunks:
-                body_payload = {
-                    "chat_id": TELEGRAM_CHAT_ID,
-                    "text": f"📖 <b>Full Story:</b>\n\n{chunk}",
-                    "parse_mode": "HTML"
-                }
-                requests.post(url, json=body_payload, timeout=15)
-                time.sleep(0.5)
-                
         return response.json()
     except Exception as e:
         print(f"Error sending telegram message: {e}")
 
 def send_oracle():
+    """Post a random picture + prediction every hour on the hour"""
     try:
         seed = random.randint(1, 999999)
         image_url = f"https://picsum.photos/seed/{seed}/800/600"
+        
         prediction = random.choice(ORACLE_PREDICTIONS)
         now = datetime.now().strftime("%H:%M")
         
-        caption = f"🔮 <b>Hourly Oracle — {now}</b>\n\n{prediction}"
+        caption = (
+            f"🔮 <b>Hourly Oracle — {now}</b>\n\n"
+            f"{prediction}"
+        )
         
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         payload = {
@@ -269,20 +215,21 @@ def send_oracle():
             print(f"Oracle posted at {now}")
         else:
             print(f"Oracle failed: {response.text}")
+            
     except Exception as e:
         print(f"Oracle error: {e}")
 
 def run_bot():
-    last_oracle_hour = None
+    global last_oracle_hour
     init_db()
-    print("Bot started with clean full-text delivery...")
+    print("Bot started with small spoiler + Read full story link...")
     
     while True:
         now = datetime.now()
         current_hour = now.hour
         
         # === HOURLY ORACLE ===
-        if CONFIG["ORACLE_ENABLED"] and current_hour != last_oracle_hour and now.minute < 2:
+        if ORACLE_ENABLED and current_hour != last_oracle_hour and now.minute < 2:
             send_oracle()
             last_oracle_hour = current_hour
         
@@ -307,14 +254,15 @@ def run_bot():
                             emoji = get_dynamic_emoji(combined_text)
                             
                             scraped_body = scrape_full_article(link)
+                            body_text = scraped_body if scraped_body else "Full text could not be scraped."
                             
-                            send_telegram_message(location, emoji, title, summary, scraped_body, link)
+                            send_telegram_single_message(location, emoji, title, summary, body_text, link)
                             print(f"Alert posted [{location}]: {title}")
                             time.sleep(1)
             except Exception as e:
                 print(f"Error parsing feed {feed_url}: {e}")
                 
-        time.sleep(CONFIG["SCAN_INTERVAL_SECONDS"])
+        time.sleep(300)   # every 5 minutes
 
 if __name__ == "__main__":
     run_bot()
