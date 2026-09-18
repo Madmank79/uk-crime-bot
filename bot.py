@@ -11,7 +11,7 @@ import re
 # --- CONFIGURATION ---
 CONFIG = {
     "DB_NAME": "uk_crime_bot.db",
-    "SCAN_INTERVAL_SECONDS": 600,          # 10 minutes
+    "SCAN_INTERVAL_SECONDS": 600,
     "USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "MIN_P_LENGTH": 60,
     "ORACLE_ENABLED": True,
@@ -20,11 +20,9 @@ CONFIG = {
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Two different destinations
-SHORT_CHAT_ID = "-1004494993483"          # UK crime news (group) - short posts
+# Two destinations
+SHORT_CHAT_ID = "-1004494993483"          # UK crime news (group)
 FULL_CHAT_ID  = "-1004311370107"          # UK Crime News full storys (channel)
-
-# Public username of the full-stories channel (for deep links)
 FULL_CHANNEL_USERNAME = "UkCrimeNewsfullstorys"
 
 RSS_FEEDS = [
@@ -227,7 +225,6 @@ def scrape_full_article(url):
     return ""
 
 def send_telegram_with_retry(payload, max_retries=2):
-    """Helper that respects Telegram rate limits"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     for attempt in range(max_retries + 1):
         try:
@@ -251,19 +248,14 @@ def send_telegram_with_retry(payload, max_retries=2):
     return None
 
 def send_dual_posts(location, emoji, title, summary, body_text, link):
-    """
-    1. Posts short card to the GROUP
-    2. Posts full free story to the CHANNEL
-    3. Edits the short card so the link jumps to the full story
-    """
     clean_title = BeautifulSoup(title, 'html.parser').get_text()
     
-    # ========== 1. SHORT CARD (Group) ==========
+    # ========== 1. SHORT CARD (Group) - keeps big picture ==========
     short_message = (
         f"{emoji} <b>[{location}] Breaking Alert</b>\n\n"
         f"<b>{clean_title}</b>\n\n"
         f"<i>{clean_text(summary)}</i>\n\n"
-        f"🔗 <a href=\"{link}\">Read full free story</a>"
+        f"📖 <a href=\"{link}\">Read full free story →</a>"
     )
 
     short_payload = {
@@ -283,13 +275,11 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
         return
     
     short_message_id = short_data["result"]["message_id"]
-    print(f"Short card posted (ID: {short_message_id})")
     
     # ========== 2. FULL STORY (Channel) ==========
     if not body_text or len(body_text.strip()) < 40:
         body_text = "Full text could not be automatically scraped from this site."
     
-    # Split long articles
     chunks = [body_text[i:i+3900] for i in range(0, len(body_text), 3900)]
     full_message_ids = []
     
@@ -305,7 +295,7 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
             "parse_mode": "HTML"
         }
         
-        time.sleep(1.2)  # be nice to Telegram
+        time.sleep(1.2)
         full_data = send_telegram_with_retry(full_payload)
         
         if full_data and full_data.get("ok"):
@@ -315,16 +305,15 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
         print("Failed to post full story")
         return
     
-    # Use the first part’s message ID for the deep link
     full_msg_id = full_message_ids[0]
     deep_link = f"https://t.me/{FULL_CHANNEL_USERNAME}/{full_msg_id}"
     
-    # ========== 3. EDIT the short card with the deep link ==========
+    # ========== 3. EDIT short card – keep big picture + deep link ==========
     edited_message = (
         f"{emoji} <b>[{location}] Breaking Alert</b>\n\n"
         f"<b>{clean_title}</b>\n\n"
         f"<i>{clean_text(summary)}</i>\n\n"
-        f"🔗 <a href=\"{deep_link}\">Read full free story →</a>"
+        f"📖 <a href=\"{deep_link}\">Read full free story →</a>"
     )
     
     edit_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
@@ -333,13 +322,17 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
         "message_id": short_message_id,
         "text": edited_message,
         "parse_mode": "HTML",
-        "disable_web_page_preview": False
+        "link_preview_options": {
+            "url": link,                     # keeps the big picture
+            "prefer_large_media": True,
+            "show_above_text": True
+        }
     }
     
     try:
         time.sleep(0.8)
         requests.post(edit_url, json=edit_payload, timeout=10)
-        print(f"Short card updated with deep link → {deep_link}")
+        print(f"Short card updated → {deep_link}")
     except Exception as e:
         print(f"Failed to edit short card: {e}")
 
@@ -354,7 +347,7 @@ def send_oracle():
         
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         payload = {
-            "chat_id": SHORT_CHAT_ID,   # Oracle goes to the short group
+            "chat_id": SHORT_CHAT_ID,
             "photo": image_url,
             "caption": caption,
             "parse_mode": "HTML"
@@ -371,7 +364,7 @@ def send_oracle():
 def run_bot():
     last_oracle_hour = None
     init_db()
-    print("Bot started → Dual posting + deep links enabled")
+    print("Bot started → Dual posting + deep links + big pictures")
     
     while True:
         now = datetime.now()
@@ -403,7 +396,7 @@ def run_bot():
                             
                             send_dual_posts(location, emoji, title, summary, scraped_body, link)
                             print(f"Posted [{location}]: {title}")
-                            time.sleep(4)   # slower to avoid rate limits
+                            time.sleep(4)
             except Exception as e:
                 print(f"Error on feed {feed_url}: {e}")
                 
