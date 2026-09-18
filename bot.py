@@ -20,8 +20,8 @@ CONFIG = {
 }
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")           # Main Channel ID
-TELEGRAM_ARCHIVE_CHAT_ID = os.getenv("TELEGRAM_ARCHIVE_CHAT_ID") # Second Channel ID for Full Text
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")                     # Main Channel ID
+TELEGRAM_ARCHIVE_CHAT_ID = os.getenv("TELEGRAM_ARCHIVE_CHAT_ID")     # Archive Channel ID / Username
 
 # --- RSS FEEDS ---
 RSS_FEEDS = [
@@ -66,7 +66,8 @@ ORACLE_PREDICTIONS = [
     "Keep your eyes open — the next 60 minutes belong to the unexpected.",
     "Old patterns are about to break. The next hour is a reset.",
     "Someone is about to reveal more than they intended.",
-    "The atmosphere is shifting. Act before the window closes."
+    "The atmosphere is shifting. Act before the window closes.",
+    "A message, a glance, or a silence will change the tone of the next hour."
 ]
 
 def init_db():
@@ -152,9 +153,9 @@ def post_to_telegram(endpoint, payload):
 
 def send_telegram_message(location, emoji, title, summary, body_text, link):
     clean_title = BeautifulSoup(title, 'html.parser').get_text()
-    archive_link = link # fallback if archive fails
+    archive_link = link  # fallback default
 
-    # 1. Post full article text to the Archive Channel first (if configured)
+    # 1. Post full article text to the Archive Channel first
     if TELEGRAM_ARCHIVE_CHAT_ID and body_text:
         chunks = [body_text[i:i+4000] for i in range(0, len(body_text), 4000)]
         first_archive_message_id = None
@@ -171,16 +172,20 @@ def send_telegram_message(location, emoji, title, summary, body_text, link):
                     first_archive_message_id = res["result"]["message_id"]
             time.sleep(0.3)
             
-        # Generate deep link to the specific archive post if possible
-        if first_archive_message_id and str(TELEGRAM_ARCHIVE_CHAT_ID).startswith("@"):
-            channel_username = str(TELEGRAM_ARCHIVE_CHAT_ID).replace("@", "")
-            archive_link = f"https://t.me/{channel_username}/{first_archive_message_id}"
-        elif first_archive_message_id and str(TELEGRAM_ARCHIVE_CHAT_ID).startswith("-100"):
-            # Clean up private channel ID format for t.me links (-100 removal)
-            clean_id = str(TELEGRAM_ARCHIVE_CHAT_ID).replace("-100", "")
-            archive_link = f"https://t.me/c/{clean_id}/{first_archive_message_id}"
+        # 2. Generate deep link to the specific archive post safely
+        if first_archive_message_id and TELEGRAM_ARCHIVE_CHAT_ID:
+            chat_id_str = str(TELEGRAM_ARCHIVE_CHAT_ID).strip()
+            
+            # If it's a public channel username (starts with @ or letters)
+            if chat_id_str.startswith("@") or not chat_id_str.replace("-", "").isdigit():
+                channel_username = chat_id_str.replace("@", "").strip()
+                archive_link = f"https://t.me/{channel_username}/{first_archive_message_id}"
+            else:
+                # Private channel ID format (-100xxxxxxx)
+                clean_id = chat_id_str.replace("-100", "").replace("-", "").strip()
+                archive_link = f"https://t.me/c/{clean_id}/{first_archive_message_id}"
 
-    # 2. Post the clean, uncluttered card to your Main Channel with a button pointing to the full story
+    # 3. Post the clean card to your Main Channel with the archive button
     main_message = (
         f"{emoji} <b>{location} Alert</b>\n\n"
         f"<b>{clean_title}</b>\n\n"
@@ -205,10 +210,40 @@ def send_telegram_message(location, emoji, title, summary, body_text, link):
     
     post_to_telegram("sendMessage", payload)
 
+def send_oracle():
+    try:
+        seed = random.randint(1, 999999)
+        image_url = f"https://picsum.photos/seed/{seed}/800/600"
+        prediction = random.choice(ORACLE_PREDICTIONS)
+        now = datetime.now().strftime("%H:%M")
+        
+        caption = f"🔮 <b>Hourly Oracle — {now}</b>\n\n{prediction}"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "photo": image_url,
+            "caption": caption,
+            "parse_mode": "HTML"
+        }
+        post_to_telegram("sendPhoto", payload)
+        print(f"Oracle posted at {now}")
+    except Exception as e:
+        print(f"Oracle error: {e}")
+
 def run_bot():
+    last_oracle_hour = None
     init_db()
-    print("Bot started with clean feed + archive channel forwarding...")
+    print("Bot started successfully...")
+    
     while True:
+        now = datetime.now()
+        current_hour = now.hour
+        
+        # === HOURLY ORACLE ===
+        if CONFIG["ORACLE_ENABLED"] and current_hour != last_oracle_hour and now.minute < 2:
+            send_oracle()
+            last_oracle_hour = current_hour
+        
+        # === CRIME SCAN ===
         for feed_url in RSS_FEEDS:
             try:
                 feed = feedparser.parse(feed_url)
@@ -229,6 +264,7 @@ def run_bot():
                             time.sleep(1)
             except Exception as e:
                 print(f"Feed error: {e}")
+                
         time.sleep(CONFIG["SCAN_INTERVAL_SECONDS"])
 
 if __name__ == "__main__":
