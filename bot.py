@@ -7,12 +7,11 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import random
 import re
-from urllib.parse import urlparse
 
 # --- CONFIGURATION ---
 CONFIG = {
     "DB_NAME": "uk_crime_bot.db",
-    "SCAN_INTERVAL_SECONDS": 600,
+    "SCAN_INTERVAL_SECONDS": 600,          # 10 minutes
     "USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "MIN_P_LENGTH": 60,
     "ORACLE_ENABLED": True,
@@ -20,10 +19,14 @@ CONFIG = {
 }
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")                     # Main Channel ID
-TELEGRAM_ARCHIVE_CHAT_ID = os.getenv("TELEGRAM_ARCHIVE_CHAT_ID")     # Archive Channel ID / Username
 
-# --- RSS FEEDS ---
+# Two different destinations
+SHORT_CHAT_ID = "-1004494993483"          # UK crime news (group) - short posts
+FULL_CHAT_ID  = "-1004311370107"          # UK Crime News full storys (channel)
+
+# Public username of the full-stories channel (for deep links)
+FULL_CHANNEL_USERNAME = "UkCrimeNewsfullstorys"
+
 RSS_FEEDS = [
     "https://feeds.bbci.co.uk/news/uk/rss.xml",
     "https://www.judiciary.uk/rss-feeds/",
@@ -36,7 +39,17 @@ RSS_FEEDS = [
     "https://www.nottinghampost.com/news/?service=rss",
     "https://www.sunderlandecho.com/news/rss",
     "https://www.birminghammail.co.uk/news/?service=rss",
-    "https://www.leicestermercury.co.uk/news/?service=rss"
+    "https://www.leicestermercury.co.uk/news/?service=rss",
+    "https://www.dailyrecord.co.uk/news/crime/rss.xml",
+    "https://www.mirror.co.uk/news/uk-news/?service=rss",
+    "https://www.walesonline.co.uk/news/?service=rss",
+    "https://www.bristolpost.co.uk/news/?service=rss",
+    "https://www.hulldailymail.co.uk/news/?service=rss",
+    "https://www.devonlive.com/news/?service=rss",
+    "https://www.cornwalllive.com/news/?service=rss",
+    "https://www.examinerlive.co.uk/news/?service=rss",
+    "https://www.cambridge-news.co.uk/news/?service=rss",
+    "https://www.kentonline.co.uk/rss/"
 ]
 
 KEYWORDS = [
@@ -47,27 +60,59 @@ KEYWORDS = [
     "gang", "shooting", "arrest", "charged", "investigation", "weapon", 
     "thief", "burglary", "cops", "detectives", "tragedy", "tragic", "hotspot",
     "rightwing", "leftwing", "just in", "breaking news", 
-    "sex attack", "counter fit", "counterfeit", "police", "assaulted", "murdered"
+    "sex attack", "counter fit", "counterfeit", "police", "assaulted", "murdered",
+    "stabbed", "shot", "raided", "raids", "wanted", "missing",
+    "abducted", "kidnap", "kidnapped", "grooming", "exploitation",
+    "fraud", "scam", "scammer", "theft", "stolen", "mugging",
+    "mugged", "beaten", "beating", "homicide", "manslaughter",
+    "domestic", "violence", "abuse", "stalking", "harassment",
+    "threats", "threatening", "arson", "firebomb", "explosive",
+    "bomb", "terror", "extremist", "riot", "disorder",
+    "public order", "breach", "bail", "remanded", "sentenced",
+    "jailed", "convicted", "guilty", "acquitted", "verdict"
 ]
 
 LOCATION_KEYWORDS = {
-    "manchestereveningnews": "Manchester", "leeds-live": "Leeds",
-    "liverpoolecho": "Liverpool", "chroniclelive": "Newcastle",
-    "glasgowtimes": "Glasgow", "edinburghnews": "Edinburgh",
-    "nottinghampost": "Nottingham", "sunderlandecho": "Sunderland",
-    "birminghammail": "Birmingham", "leicestermercury": "Leicester",
-    "judiciary.uk": "UK Courts", "bbci.co.uk": "National UK"
+    "manchestereveningnews": "Manchester",
+    "leeds-live": "Leeds",
+    "liverpoolecho": "Liverpool",
+    "chroniclelive": "Newcastle",
+    "glasgowtimes": "Glasgow",
+    "edinburghnews": "Edinburgh",
+    "nottinghampost": "Nottingham",
+    "sunderlandecho": "Sunderland",
+    "birminghammail": "Birmingham",
+    "leicestermercury": "Leicester",
+    "judiciary.uk": "UK Courts",
+    "bbci.co.uk": "National UK",
+    "dailyrecord": "Scotland",
+    "mirror": "National UK",
+    "walesonline": "Wales",
+    "bristolpost": "Bristol",
+    "hulldailymail": "Hull",
+    "devonlive": "Devon",
+    "cornwalllive": "Cornwall",
+    "examinerlive": "Yorkshire",
+    "cambridge-news": "Cambridge",
+    "kentonline": "Kent"
 }
 
 ORACLE_PREDICTIONS = [
-    "The next hour will bring movement in the shadows… watch the quiet ones.",
-    "Something unexpected is already on its way. Stay sharp.",
-    "A small decision made this hour will echo louder than you think.",
-    "Keep your eyes open — the next 60 minutes belong to the unexpected.",
-    "Old patterns are about to break. The next hour is a reset.",
-    "Someone is about to reveal more than they intended.",
-    "The atmosphere is shifting. Act before the window closes.",
-    "A message, a glance, or a silence will change the tone of the next hour."
+    "The next hour carries a quiet weight. Something small is about to matter.",
+    "Watch the edges of the hour — the real movement rarely happens in the centre.",
+    "A decision made in the next 60 minutes will travel further than expected.",
+    "The atmosphere is thinning. Pay attention to what feels slightly off.",
+    "Someone will reveal more than they intended before the hour ends.",
+    "What looks like delay is actually preparation. Stay ready.",
+    "The next hour favours those who listen more than they speak.",
+    "An old pattern is about to crack. Don’t force it — just notice.",
+    "A message, a glance, or a silence will shift the tone of the next hour.",
+    "Something you almost dismissed is the key to the coming hour.",
+    "The air is charged. Move carefully but don’t stand still.",
+    "A quiet opportunity will appear dressed as inconvenience.",
+    "The next 60 minutes belong to the observant.",
+    "Trust the strange feeling. It is accurate this time.",
+    "What feels stuck is already beginning to move beneath the surface."
 ]
 
 def init_db():
@@ -100,12 +145,18 @@ def get_dynamic_emoji(text):
     text_lower = text.lower()
     if any(w in text_lower for w in ["murder", "killed", "homicide", "fatal"]):
         return "💀"
-    elif any(w in text_lower for w in ["knife", "stabbing", "blade", "machete"]):
+    elif any(w in text_lower for w in ["knife", "stabbing", "blade", "machete", "stabbed"]):
         return "🔪"
     elif any(w in text_lower for w in ["gun", "shooting", "firearm", "shot"]):
         return "🔫"
-    elif any(w in text_lower for w in ["court", "judge", "sentence", "prison", "trial"]):
+    elif any(w in text_lower for w in ["court", "judge", "sentence", "prison", "trial", "convicted", "jailed"]):
         return "⚖️"
+    elif any(w in text_lower for w in ["fight", "brawl", "attack", "beaten"]):
+        return "👊"
+    elif any(w in text_lower for w in ["drug", "cocaine", "cannabis", "dealer"]):
+        return "💊"
+    elif any(w in text_lower for w in ["arson", "firebomb", "fire"]):
+        return "🔥"
     return "🚨"
 
 def detect_location(feed_url, text):
@@ -113,7 +164,14 @@ def detect_location(feed_url, text):
         if domain in feed_url:
             return loc
     text_lower = text.lower()
-    cities = ["manchester", "london", "glasgow", "edinburgh", "nottingham", "newcastle", "sunderland", "birmingham", "leicester", "leeds", "liverpool"]
+    cities = [
+        "manchester", "london", "glasgow", "edinburgh", "nottingham", 
+        "newcastle", "sunderland", "birmingham", "leicester", "leeds", 
+        "liverpool", "cardiff", "belfast", "sheffield", "bristol", "york",
+        "bradford", "coventry", "hull", "stoke", "cambridge", "kent",
+        "devon", "cornwall", "wales"
+    ]
+    cities.sort(key=len, reverse=True)
     for city in cities:
         if city in text_lower:
             return city.capitalize()
@@ -121,86 +179,97 @@ def detect_location(feed_url, text):
 
 def clean_text(text):
     text = re.sub(r'\s+', ' ', text).strip()
-    boilerplate = [r'^get the latest', r'^sign up to', r'^read more:', r'^© \d{4}']
+    boilerplate = [
+        r'^get the latest north east headlines direct to your inbox',
+        r'^sign up to our newsletter',
+        r'^read more:',
+        r'^© \d{4}',
+        r'click here to subscribe'
+    ]
     for pattern in boilerplate:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
     return text
 
 def scrape_full_article(url):
-    try:
-        headers = {"User-Agent": CONFIG["USER_AGENT"]}
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            for tag in soup.select('script, style, header, footer, aside, .advertisement'):
-                tag.decompose()
-            body_container = soup.find('article') or soup.find('main') or soup.find('div', class_=lambda x: x and 'body' in x)
-            paragraphs = body_container.find_all('p') if body_container else soup.find_all('p')
-            clean_paragraphs = [clean_text(p.get_text()) for p in paragraphs if len(p.get_text().strip()) > CONFIG["MIN_P_LENGTH"]]
-            return "\n\n".join(clean_paragraphs)
-    except Exception as e:
-        print(f"Scraping error: {e}")
+    retries = 0
+    while retries < CONFIG["MAX_RETRIES"]:
+        try:
+            headers = {"User-Agent": CONFIG["USER_AGENT"]}
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                for tag in soup.select('script, style, header, footer, aside, .advertisement, .newsletter-signup, .social-embed'):
+                    tag.decompose()
+
+                body_container = (
+                    soup.find('article') or 
+                    soup.find('main') or 
+                    soup.find('div', class_=lambda x: x and any(c in x for c in ['article-body', 'story-body', 'content-body', 'post-content']))
+                )
+                
+                if body_container:
+                    paragraphs = body_container.find_all('p')
+                else:
+                    paragraphs = soup.find_all('p')
+                    
+                clean_paragraphs = []
+                for p in paragraphs:
+                    text = p.get_text().strip()
+                    if len(text) > CONFIG["MIN_P_LENGTH"] and not text.startswith(('Credit:', 'PA Wire', 'SWNS', 'Image:')):
+                        clean_paragraphs.append(clean_text(text))
+                        
+                return "\n\n".join(clean_paragraphs)
+        except Exception as e:
+            print(f"Scraping error for {url}: {e}")
+            retries += 1
+            time.sleep(2)
     return ""
 
-def post_to_telegram(endpoint, payload):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{endpoint}"
-    try:
-        response = requests.post(url, json=payload, timeout=15)
-        return response.json()
-    except Exception as e:
-        print(f"Telegram API error: {e}")
-        return None
+def send_telegram_with_retry(payload, max_retries=2):
+    """Helper that respects Telegram rate limits"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(url, json=payload, timeout=15)
+            data = response.json()
+            
+            if data.get("ok"):
+                return data
+            
+            if data.get("error_code") == 429:
+                retry_after = data.get("parameters", {}).get("retry_after", 30)
+                print(f"Rate limited. Waiting {retry_after} seconds...")
+                time.sleep(retry_after + 2)
+                continue
+            
+            print("Telegram error:", data)
+            return data
+        except Exception as e:
+            print(f"Request error: {e}")
+            time.sleep(3)
+    return None
 
-def send_telegram_message(location, emoji, title, summary, body_text, link):
+def send_dual_posts(location, emoji, title, summary, body_text, link):
+    """
+    1. Posts short card to the GROUP
+    2. Posts full free story to the CHANNEL
+    3. Edits the short card so the link jumps to the full story
+    """
     clean_title = BeautifulSoup(title, 'html.parser').get_text()
-    archive_link = link  # fallback default
-
-    # 1. Post full article text to the Archive Channel first
-    if TELEGRAM_ARCHIVE_CHAT_ID and body_text:
-        chunks = [body_text[i:i+4000] for i in range(0, len(body_text), 4000)]
-        first_archive_message_id = None
-        
-        for idx, chunk in enumerate(chunks):
-            archive_payload = {
-                "chat_id": TELEGRAM_ARCHIVE_CHAT_ID,
-                "text": f"<b>{clean_title}</b>\n(Source: {link})\n\n{chunk}",
-                "parse_mode": "HTML"
-            }
-            res = post_to_telegram("sendMessage", archive_payload)
-            if res and res.get("ok"):
-                if idx == 0:
-                    first_archive_message_id = res["result"]["message_id"]
-            time.sleep(0.3)
-            
-        # 2. Generate deep link to the specific archive post safely
-        if first_archive_message_id and TELEGRAM_ARCHIVE_CHAT_ID:
-            chat_id_str = str(TELEGRAM_ARCHIVE_CHAT_ID).strip()
-            
-            # If it's a public channel username (starts with @ or letters)
-            if chat_id_str.startswith("@") or not chat_id_str.replace("-", "").isdigit():
-                channel_username = chat_id_str.replace("@", "").strip()
-                archive_link = f"https://t.me/{channel_username}/{first_archive_message_id}"
-            else:
-                # Private channel ID format (-100xxxxxxx)
-                clean_id = chat_id_str.replace("-100", "").replace("-", "").strip()
-                archive_link = f"https://t.me/c/{clean_id}/{first_archive_message_id}"
-
-    # 3. Post the clean card to your Main Channel with the archive button
-    main_message = (
-        f"{emoji} <b>{location} Alert</b>\n\n"
+    
+    # ========== 1. SHORT CARD (Group) ==========
+    short_message = (
+        f"{emoji} <b>[{location}] Breaking Alert</b>\n\n"
         f"<b>{clean_title}</b>\n\n"
-        f"<i>{clean_text(summary)}</i>"
+        f"<i>{clean_text(summary)}</i>\n\n"
+        f"🔗 <a href=\"{link}\">Read full free story</a>"
     )
 
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": main_message,
+    short_payload = {
+        "chat_id": SHORT_CHAT_ID,
+        "text": short_message,
         "parse_mode": "HTML",
-        "reply_markup": {
-            "inline_keyboard": [
-                [{"text": "📖 Read Full Story (Free)", "url": archive_link}]
-            ]
-        },
         "link_preview_options": {
             "url": link,
             "prefer_large_media": True,
@@ -208,7 +277,71 @@ def send_telegram_message(location, emoji, title, summary, body_text, link):
         }
     }
     
-    post_to_telegram("sendMessage", payload)
+    short_data = send_telegram_with_retry(short_payload)
+    if not short_data or not short_data.get("ok"):
+        print("Failed to post short card")
+        return
+    
+    short_message_id = short_data["result"]["message_id"]
+    print(f"Short card posted (ID: {short_message_id})")
+    
+    # ========== 2. FULL STORY (Channel) ==========
+    if not body_text or len(body_text.strip()) < 40:
+        body_text = "Full text could not be automatically scraped from this site."
+    
+    # Split long articles
+    chunks = [body_text[i:i+3900] for i in range(0, len(body_text), 3900)]
+    full_message_ids = []
+    
+    for i, chunk in enumerate(chunks):
+        if len(chunks) > 1:
+            full_text = f"📖 <b>Full free story</b> (Part {i+1}/{len(chunks)}):\n\n{chunk}"
+        else:
+            full_text = f"📖 <b>Full free story:</b>\n\n{chunk}"
+        
+        full_payload = {
+            "chat_id": FULL_CHAT_ID,
+            "text": full_text,
+            "parse_mode": "HTML"
+        }
+        
+        time.sleep(1.2)  # be nice to Telegram
+        full_data = send_telegram_with_retry(full_payload)
+        
+        if full_data and full_data.get("ok"):
+            full_message_ids.append(full_data["result"]["message_id"])
+    
+    if not full_message_ids:
+        print("Failed to post full story")
+        return
+    
+    # Use the first part’s message ID for the deep link
+    full_msg_id = full_message_ids[0]
+    deep_link = f"https://t.me/{FULL_CHANNEL_USERNAME}/{full_msg_id}"
+    
+    # ========== 3. EDIT the short card with the deep link ==========
+    edited_message = (
+        f"{emoji} <b>[{location}] Breaking Alert</b>\n\n"
+        f"<b>{clean_title}</b>\n\n"
+        f"<i>{clean_text(summary)}</i>\n\n"
+        f"🔗 <a href=\"{deep_link}\">Read full free story →</a>"
+    )
+    
+    edit_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+    edit_payload = {
+        "chat_id": SHORT_CHAT_ID,
+        "message_id": short_message_id,
+        "text": edited_message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False
+    }
+    
+    try:
+        time.sleep(0.8)
+        requests.post(edit_url, json=edit_payload, timeout=10)
+        print(f"Short card updated with deep link → {deep_link}")
+    except Exception as e:
+        print(f"Failed to edit short card: {e}")
 
 def send_oracle():
     try:
@@ -218,40 +351,48 @@ def send_oracle():
         now = datetime.now().strftime("%H:%M")
         
         caption = f"🔮 <b>Hourly Oracle — {now}</b>\n\n{prediction}"
+        
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
+            "chat_id": SHORT_CHAT_ID,   # Oracle goes to the short group
             "photo": image_url,
             "caption": caption,
             "parse_mode": "HTML"
         }
-        post_to_telegram("sendPhoto", payload)
-        print(f"Oracle posted at {now}")
+        
+        response = requests.post(url, json=payload, timeout=15)
+        if response.status_code == 200:
+            print(f"Oracle posted at {now}")
+        else:
+            print(f"Oracle failed: {response.text}")
     except Exception as e:
         print(f"Oracle error: {e}")
 
 def run_bot():
     last_oracle_hour = None
     init_db()
-    print("Bot started successfully...")
+    print("Bot started → Dual posting + deep links enabled")
     
     while True:
         now = datetime.now()
         current_hour = now.hour
         
-        # === HOURLY ORACLE ===
         if CONFIG["ORACLE_ENABLED"] and current_hour != last_oracle_hour and now.minute < 2:
             send_oracle()
             last_oracle_hour = current_hour
         
-        # === CRIME SCAN ===
+        print("Scanning feeds...")
         for feed_url in RSS_FEEDS:
             try:
                 feed = feedparser.parse(feed_url)
                 for entry in feed.entries:
                     article_id = entry.id if 'id' in entry else entry.link
+                    title = entry.title
+                    link = entry.link
+
                     if not is_seen(article_id):
                         mark_as_seen(article_id)
-                        title, link = entry.title, entry.link
+                        
                         summary = entry.summary if 'summary' in entry else ""
                         combined_text = (title + " " + summary).lower()
                         
@@ -260,10 +401,11 @@ def run_bot():
                             emoji = get_dynamic_emoji(combined_text)
                             scraped_body = scrape_full_article(link)
                             
-                            send_telegram_message(location, emoji, title, summary, scraped_body, link)
-                            time.sleep(1)
+                            send_dual_posts(location, emoji, title, summary, scraped_body, link)
+                            print(f"Posted [{location}]: {title}")
+                            time.sleep(4)   # slower to avoid rate limits
             except Exception as e:
-                print(f"Feed error: {e}")
+                print(f"Error on feed {feed_url}: {e}")
                 
         time.sleep(CONFIG["SCAN_INTERVAL_SECONDS"])
 
