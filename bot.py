@@ -15,7 +15,8 @@ CONFIG = {
     "USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "MIN_P_LENGTH": 60,
     "ORACLE_ENABLED": True,
-    "MAX_RETRIES": 2
+    "MAX_RETRIES": 2,
+    "SCRAPE_TIMEOUT": 18
 }
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -189,39 +190,75 @@ def clean_text(text):
     return text
 
 def scrape_full_article(url):
-    retries = 0
-    while retries < CONFIG["MAX_RETRIES"]:
+    """
+    More resilient scraper:
+    - Longer timeout
+    - One gentle retry
+    - Skips quickly on failure so the bot doesn't stall
+    """
+    headers = {"User-Agent": CONFIG["USER_AGENT"]}
+    
+    for attempt in range(CONFIG["MAX_RETRIES"] + 1):
         try:
-            headers = {"User-Agent": CONFIG["USER_AGENT"]}
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                for tag in soup.select('script, style, header, footer, aside, .advertisement, .newsletter-signup, .social-embed'):
-                    tag.decompose()
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=CONFIG["SCRAPE_TIMEOUT"]
+            )
+            
+            if response.status_code != 200:
+                print(f"Bad status {response.status_code} for {url}")
+                return ""
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Remove junk
+            for tag in soup.select('script, style, header, footer, aside, .advertisement, .newsletter-signup, .social-embed, .ad, .ads'):
+                tag.decompose()
 
-                body_container = (
-                    soup.find('article') or 
-                    soup.find('main') or 
-                    soup.find('div', class_=lambda x: x and any(c in x for c in ['article-body', 'story-body', 'content-body', 'post-content']))
-                )
+            body_container = (
+                soup.find('article') or 
+                soup.find('main') or 
+                soup.find('div', class_=lambda x: x and any(c in str(x).lower() for c in [
+                    'article-body', 'story-body', 'content-body', 'post-content', 'article__body'
+                ]))
+            )
+            
+            if body_container:
+                paragraphs = body_container.find_all('p')
+            else:
+                paragraphs = soup.find_all('p')
                 
-                if body_container:
-                    paragraphs = body_container.find_all('p')
-                else:
-                    paragraphs = soup.find_all('p')
+            clean_paragraphs = []
+            for p in paragraphs:
+                text = p.get_text().strip()
+                if (len(text) > CONFIG["MIN_P_LENGTH"] and 
+                    not text.startswith(('Credit:', 'PA Wire', 'SWNS', 'Image:', 'Getty', 'Related:'))):
+                    clean_paragraphs.append(clean_text(text))
                     
-                clean_paragraphs = []
-                for p in paragraphs:
-                    text = p.get_text().strip()
-                    if len(text) > CONFIG["MIN_P_LENGTH"] and not text.startswith(('Credit:', 'PA Wire', 'SWNS', 'Image:')):
-                        clean_paragraphs.append(clean_text(text))
-                        
+            if clean_paragraphs:
                 return "\n\n".join(clean_paragraphs)
+            else:
+                return ""
+                
+        except requests.exceptions.Timeout:
+            print(f"Timeout on attempt {attempt+1} for {url}")
+            if attempt < CONFIG["MAX_RETRIES"]:
+                time.sleep(2)
+                continue
+            return ""
+            
+        except requests.exceptions.ConnectionError as e:
+            print(f"Connection error on attempt {attempt+1} for {url}: {e}")
+            if attempt < CONFIG["MAX_RETRIES"]:
+                time.sleep(3)
+                continue
+            return ""
+            
         except Exception as e:
             print(f"Scraping error for {url}: {e}")
-            retries += 1
-            time.sleep(2)
+            return ""
+    
     return ""
 
 def send_telegram_with_retry(payload, max_retries=2):
@@ -250,7 +287,7 @@ def send_telegram_with_retry(payload, max_retries=2):
 def send_dual_posts(location, emoji, title, summary, body_text, link):
     clean_title = BeautifulSoup(title, 'html.parser').get_text()
     
-    # ========== 1. SHORT CARD (Group) - keeps big picture ==========
+    # ========== 1. SHORT CARD (Group) ==========
     short_message = (
         f"{emoji} <b>[{location}] Breaking Alert</b>\n\n"
         f"<b>{clean_title}</b>\n\n"
@@ -323,7 +360,7 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
         "text": edited_message,
         "parse_mode": "HTML",
         "link_preview_options": {
-            "url": link,                     # keeps the big picture
+            "url": link,
             "prefer_large_media": True,
             "show_above_text": True
         }
@@ -364,7 +401,7 @@ def send_oracle():
 def run_bot():
     last_oracle_hour = None
     init_db()
-    print("Bot started → Dual posting + deep links + big pictures")
+    print("Bot started → Improved scraper + dual posting + deep links")
     
     while True:
         now = datetime.now()
