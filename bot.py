@@ -267,12 +267,22 @@ def send_telegram_with_retry(payload, max_retries=2):
 
 def send_dual_posts(location, emoji, title, summary, body_text, link):
     clean_title = BeautifulSoup(title, 'html.parser').get_text()
+    clean_summary = clean_text(summary) if summary else ""
     
-    # 1. Always post short card to the GROUP
+    # Decide what to post as the "full free story"
+    if body_text and len(body_text.strip()) >= 80:
+        full_content = body_text
+        source_note = ""
+    else:
+        # Fallback to RSS summary so we still have something free
+        full_content = clean_summary if clean_summary else "Full article text could not be retrieved. Please use the original source link."
+        source_note = "\n\n<i>(Summary version – full scrape unavailable)</i>"
+    
+    # ========== 1. SHORT CARD (Group) ==========
     short_message = (
         f"{emoji} <b>[{location}] Breaking Alert</b>\n\n"
         f"<b>{clean_title}</b>\n\n"
-        f"<i>{clean_text(summary)}</i>\n\n"
+        f"<i>{clean_summary}</i>\n\n"
         f"📖 <a href=\"{link}\">Read full free story →</a>"
     )
 
@@ -294,19 +304,15 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
     
     short_message_id = short_data["result"]["message_id"]
     
-    # 2. Only post full story if scraping succeeded
-    if not body_text or len(body_text.strip()) < 80:
-        print("Scraping failed – skipping full story channel")
-        return
-    
-    chunks = [body_text[i:i+3900] for i in range(0, len(body_text), 3900)]
+    # ========== 2. FULL STORY (Channel) – always post something ==========
+    chunks = [full_content[i:i+3900] for i in range(0, len(full_content), 3900)]
     full_message_ids = []
     
     for i, chunk in enumerate(chunks):
         if len(chunks) > 1:
-            full_text = f"📖 <b>Full free story</b> (Part {i+1}/{len(chunks)}):\n\n{chunk}"
+            full_text = f"📖 <b>Full free story</b> (Part {i+1}/{len(chunks)}):\n\n{chunk}{source_note}"
         else:
-            full_text = f"📖 <b>Full free story:</b>\n\n{chunk}"
+            full_text = f"📖 <b>Full free story:</b>\n\n{chunk}{source_note}"
         
         full_payload = {
             "chat_id": FULL_CHAT_ID,
@@ -324,14 +330,14 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
         print("Failed to post full story to channel")
         return
     
-    # 3. Update short card with deep link
+    # ========== 3. Always update short card with deep link ==========
     full_msg_id = full_message_ids[0]
     deep_link = f"https://t.me/{FULL_CHANNEL_USERNAME}/{full_msg_id}"
     
     edited_message = (
         f"{emoji} <b>[{location}] Breaking Alert</b>\n\n"
         f"<b>{clean_title}</b>\n\n"
-        f"<i>{clean_text(summary)}</i>\n\n"
+        f"<i>{clean_summary}</i>\n\n"
         f"📖 <a href=\"{deep_link}\">Read full free story →</a>"
     )
     
@@ -383,7 +389,7 @@ def send_oracle():
 def run_bot():
     last_oracle_hour = None
     init_db()
-    print("Bot started → Clean dual posting (full story only when scrape succeeds)")
+    print("Bot started → Always post free content + deep links")
     
     while True:
         now = datetime.now()
