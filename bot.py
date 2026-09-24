@@ -4,9 +4,10 @@ import sqlite3
 import feedparser
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 import random
 import re
+from collections import defaultdict
 
 # --- CONFIGURATION ---
 CONFIG = {
@@ -16,7 +17,8 @@ CONFIG = {
     "MIN_P_LENGTH": 60,
     "ORACLE_ENABLED": True,
     "MAX_RETRIES": 2,
-    "SCRAPE_TIMEOUT": 18
+    "SCRAPE_TIMEOUT": 18,
+    "STATS_INTERVAL_HOURS": 5
 }
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -114,6 +116,23 @@ ORACLE_PREDICTIONS = [
     "What feels stuck is already beginning to move beneath the surface."
 ]
 
+# Crime categories for stats
+CRIME_CATEGORIES = {
+    "🔪 Knife / Stabbing": ["knife", "stabbing", "stabbed", "blade", "machete"],
+    "🔫 Guns / Shooting": ["gun", "shooting", "shot", "firearm"],
+    "💀 Murder / Homicide": ["murder", "murdered", "homicide", "manslaughter", "killed", "fatal"],
+    "👊 Assault / Fighting": ["assault", "assaulted", "fight", "brawl", "punch", "beaten", "beating", "attack"],
+    "⚖️ Court / Sentencing": ["court", "trial", "judge", "sentence", "sentenced", "prison", "jailed", "convicted", "guilty", "hearing"],
+    "💊 Drugs": ["drug", "cocaine", "cannabis", "dealer"],
+    "🔥 Arson / Fire": ["arson", "firebomb", "fire"],
+    "🚨 Other Crime": ["robbery", "burglary", "theft", "stolen", "mugging", "fraud", "scam", "arrest", "charged"]
+}
+
+# Stats tracking
+stats_counter = defaultdict(int)
+stats_start_time = datetime.now()
+total_stories_in_period = 0
+
 def init_db():
     conn = sqlite3.connect(CONFIG["DB_NAME"])
     cursor = conn.cursor()
@@ -188,6 +207,54 @@ def clean_text(text):
     for pattern in boilerplate:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
     return text
+
+def update_stats(text):
+    global total_stories_in_period
+    text_lower = text.lower()
+    total_stories_in_period += 1
+    
+    matched = False
+    for category, words in CRIME_CATEGORIES.items():
+        if any(w in text_lower for w in words):
+            stats_counter[category] += 1
+            matched = True
+    if not matched:
+        stats_counter["🚨 Other Crime"] += 1
+
+def send_stats_summary():
+    global stats_counter, stats_start_time, total_stories_in_period
+    
+    if total_stories_in_period == 0:
+        return
+    
+    now = datetime.now()
+    period = f"{stats_start_time.strftime('%H:%M')} – {now.strftime('%H:%M')}"
+    
+    lines = [f"📊 <b>Crime Stats – Last 5 Hours</b>\n<i>{period}</i>\n"]
+    lines.append(f"Total stories: <b>{total_stories_in_period}</b>\n")
+    
+    # Sort by count descending
+    sorted_stats = sorted(stats_counter.items(), key=lambda x: x[1], reverse=True)
+    
+    for category, count in sorted_stats:
+        if count > 0:
+            lines.append(f"{category}: <b>{count}</b>")
+    
+    message = "\n".join(lines)
+    
+    payload = {
+        "chat_id": SHORT_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    
+    send_telegram_with_retry(payload)
+    print(f"Stats summary posted ({total_stories_in_period} stories)")
+    
+    # Reset counters
+    stats_counter = defaultdict(int)
+    stats_start_time = datetime.now()
+    total_stories_in_period = 0
 
 def scrape_full_article(url):
     headers = {"User-Agent": CONFIG["USER_AGENT"]}
@@ -274,8 +341,7 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
         full_content = body_text
         source_note = ""
     else:
-        # Fallback to RSS summary so we still have something free
-        full_content = clean_summary if clean_summary else "Full article text could not be retrieved. Please use the original source link."
+        full_content = clean_summary if clean_summary else "Full article text could not be retrieved."
         source_note = "\n\n<i>(Summary version – full scrape unavailable)</i>"
     
     # ========== 1. SHORT CARD (Group) ==========
@@ -304,7 +370,7 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
     
     short_message_id = short_data["result"]["message_id"]
     
-    # ========== 2. FULL STORY (Channel) – always post something ==========
+    # ========== 2. FULL STORY (Channel) ==========
     chunks = [full_content[i:i+3900] for i in range(0, len(full_content), 3900)]
     full_message_ids = []
     
@@ -330,7 +396,7 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
         print("Failed to post full story to channel")
         return
     
-    # ========== 3. Always update short card with deep link ==========
+    # ========== 3. Update short card with deep link ==========
     full_msg_id = full_message_ids[0]
     deep_link = f"https://t.me/{FULL_CHANNEL_USERNAME}/{full_msg_id}"
     
@@ -387,17 +453,25 @@ def send_oracle():
         print(f"Oracle error: {e}")
 
 def run_bot():
+    global stats_start_time
     last_oracle_hour = None
+    last_stats_time = datetime.now()
     init_db()
-    print("Bot started → Always post free content + deep links")
+    print("Bot started → Dual posting + 5-hour crime stats")
     
     while True:
         now = datetime.now()
         current_hour = now.hour
         
+        # Hourly Oracle
         if CONFIG["ORACLE_ENABLED"] and current_hour != last_oracle_hour and now.minute < 2:
             send_oracle()
             last_oracle_hour = current_hour
+        
+        # 5-hour stats
+        if (now - last_stats_time) >= timedelta(hours=CONFIG["STATS_INTERVAL_HOURS"]):
+            send_stats_summary()
+            last_stats_time = now
         
         print("Scanning feeds...")
         for feed_url in RSS_FEEDS:
@@ -418,6 +492,9 @@ def run_bot():
                             location = detect_location(feed_url, combined_text)
                             emoji = get_dynamic_emoji(combined_text)
                             scraped_body = scrape_full_article(link)
+                            
+                            # Update stats
+                            update_stats(combined_text)
                             
                             send_dual_posts(location, emoji, title, summary, scraped_body, link)
                             print(f"Posted [{location}]: {title}")
