@@ -18,14 +18,14 @@ CONFIG = {
     "ORACLE_ENABLED": True,
     "MAX_RETRIES": 2,
     "SCRAPE_TIMEOUT": 18,
-    "STATS_INTERVAL_HOURS": 5
+    "STATS_INTERVAL_HOURS": 5,
+    "TITLE_DEDUP_HOURS": 24          # skip similar titles for 24 hours
 }
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Two destinations
-SHORT_CHAT_ID = "-1004494993483"          # UK crime news (group)
-FULL_CHAT_ID  = "-1004311370107"          # UK Crime News full storys (channel)
+SHORT_CHAT_ID = "-1004494993483"
+FULL_CHAT_ID  = "-1004311370107"
 FULL_CHANNEL_USERNAME = "UkCrimeNewsfullstorys"
 
 RSS_FEEDS = [
@@ -116,19 +116,20 @@ ORACLE_PREDICTIONS = [
     "What feels stuck is already beginning to move beneath the surface."
 ]
 
-# Crime categories for stats
+# Cleaner crime categories
 CRIME_CATEGORIES = {
     "🔪 Knife / Stabbing": ["knife", "stabbing", "stabbed", "blade", "machete"],
     "🔫 Guns / Shooting": ["gun", "shooting", "shot", "firearm"],
     "💀 Murder / Homicide": ["murder", "murdered", "homicide", "manslaughter", "killed", "fatal"],
-    "👊 Assault / Fighting": ["assault", "assaulted", "fight", "brawl", "punch", "beaten", "beating", "attack"],
-    "⚖️ Court / Sentencing": ["court", "trial", "judge", "sentence", "sentenced", "prison", "jailed", "convicted", "guilty", "hearing"],
+    "👊 Assault / Violence": ["assault", "assaulted", "fight", "brawl", "punch", "beaten", "beating", "attack", "violence", "domestic"],
+    "⚖️ Court / Justice": ["court", "trial", "judge", "sentence", "sentenced", "prison", "jailed", "convicted", "guilty", "hearing", "bail", "remanded"],
     "💊 Drugs": ["drug", "cocaine", "cannabis", "dealer"],
-    "🔥 Arson / Fire": ["arson", "firebomb", "fire"],
-    "🚨 Other Crime": ["robbery", "burglary", "theft", "stolen", "mugging", "fraud", "scam", "arrest", "charged"]
+    "🔥 Arson / Explosives": ["arson", "firebomb", "fire", "explosive", "bomb"],
+    "💰 Theft / Robbery": ["robbery", "burglary", "theft", "stolen", "mugging", "mugged", "thief", "raided"],
+    "🚨 Fraud / Scams": ["fraud", "scam", "scammer", "counterfeit"],
+    "🚨 Sexual / Exploitation": ["rape", "sex attack", "grooming", "exploitation", "abducted", "kidnap", "kidnapped"]
 }
 
-# Stats tracking
 stats_counter = defaultdict(int)
 stats_start_time = datetime.now()
 total_stories_in_period = 0
@@ -139,6 +140,12 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS seen_articles (
             article_id TEXT PRIMARY KEY
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS seen_titles (
+            clean_title TEXT PRIMARY KEY,
+            posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
@@ -159,6 +166,42 @@ def mark_as_seen(article_id):
     conn.commit()
     conn.close()
 
+def clean_title_for_dedup(title):
+    """Create a simplified version of the title for duplicate detection"""
+    title = title.lower()
+    title = re.sub(r'[^\w\s]', '', title)          # remove punctuation
+    title = re.sub(r'\b(the|a|an|in|on|at|to|for|of|and|as|by|with|from|after|before|over|under)\b', '', title)
+    title = re.sub(r'\s+', ' ', title).strip()
+    return title[:120]   # keep it reasonably short
+
+def is_similar_title_seen(title):
+    clean = clean_title_for_dedup(title)
+    if len(clean) < 15:
+        return False
+    
+    conn = sqlite3.connect(CONFIG["DB_NAME"])
+    cursor = conn.cursor()
+    
+    # Clean old titles
+    cutoff = datetime.now() - timedelta(hours=CONFIG["TITLE_DEDUP_HOURS"])
+    cursor.execute("DELETE FROM seen_titles WHERE posted_at < ?", (cutoff,))
+    
+    cursor.execute("SELECT 1 FROM seen_titles WHERE clean_title = ?", (clean,))
+    exists = cursor.fetchone() is not None
+    conn.commit()
+    conn.close()
+    return exists
+
+def mark_title_seen(title):
+    clean = clean_title_for_dedup(title)
+    if len(clean) < 15:
+        return
+    conn = sqlite3.connect(CONFIG["DB_NAME"])
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO seen_titles (clean_title) VALUES (?)", (clean,))
+    conn.commit()
+    conn.close()
+
 def get_dynamic_emoji(text):
     text_lower = text.lower()
     if any(w in text_lower for w in ["murder", "killed", "homicide", "fatal"]):
@@ -169,11 +212,11 @@ def get_dynamic_emoji(text):
         return "🔫"
     elif any(w in text_lower for w in ["court", "judge", "sentence", "prison", "trial", "convicted", "jailed"]):
         return "⚖️"
-    elif any(w in text_lower for w in ["fight", "brawl", "attack", "beaten"]):
+    elif any(w in text_lower for w in ["fight", "brawl", "attack", "beaten", "assault"]):
         return "👊"
     elif any(w in text_lower for w in ["drug", "cocaine", "cannabis", "dealer"]):
         return "💊"
-    elif any(w in text_lower for w in ["arson", "firebomb", "fire"]):
+    elif any(w in text_lower for w in ["arson", "firebomb", "fire", "bomb"]):
         return "🔥"
     return "🚨"
 
@@ -219,7 +262,7 @@ def update_stats(text):
             stats_counter[category] += 1
             matched = True
     if not matched:
-        stats_counter["🚨 Other Crime"] += 1
+        stats_counter["🚨 Other"] = stats_counter.get("🚨 Other", 0) + 1
 
 def send_stats_summary():
     global stats_counter, stats_start_time, total_stories_in_period
@@ -233,7 +276,6 @@ def send_stats_summary():
     lines = [f"📊 <b>Crime Stats – Last 5 Hours</b>\n<i>{period}</i>\n"]
     lines.append(f"Total stories: <b>{total_stories_in_period}</b>\n")
     
-    # Sort by count descending
     sorted_stats = sorted(stats_counter.items(), key=lambda x: x[1], reverse=True)
     
     for category, count in sorted_stats:
@@ -251,7 +293,6 @@ def send_stats_summary():
     send_telegram_with_retry(payload)
     print(f"Stats summary posted ({total_stories_in_period} stories)")
     
-    # Reset counters
     stats_counter = defaultdict(int)
     stats_start_time = datetime.now()
     total_stories_in_period = 0
@@ -261,11 +302,7 @@ def scrape_full_article(url):
     
     for attempt in range(CONFIG["MAX_RETRIES"] + 1):
         try:
-            response = requests.get(
-                url,
-                headers=headers,
-                timeout=CONFIG["SCRAPE_TIMEOUT"]
-            )
+            response = requests.get(url, headers=headers, timeout=CONFIG["SCRAPE_TIMEOUT"])
             
             if response.status_code != 200:
                 return ""
@@ -336,7 +373,6 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
     clean_title = BeautifulSoup(title, 'html.parser').get_text()
     clean_summary = clean_text(summary) if summary else ""
     
-    # Decide what to post as the "full free story"
     if body_text and len(body_text.strip()) >= 80:
         full_content = body_text
         source_note = ""
@@ -344,7 +380,7 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
         full_content = clean_summary if clean_summary else "Full article text could not be retrieved."
         source_note = "\n\n<i>(Summary version – full scrape unavailable)</i>"
     
-    # ========== 1. SHORT CARD (Group) ==========
+    # 1. Short card
     short_message = (
         f"{emoji} <b>[{location}] Breaking Alert</b>\n\n"
         f"<b>{clean_title}</b>\n\n"
@@ -370,7 +406,7 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
     
     short_message_id = short_data["result"]["message_id"]
     
-    # ========== 2. FULL STORY (Channel) ==========
+    # 2. Full story
     chunks = [full_content[i:i+3900] for i in range(0, len(full_content), 3900)]
     full_message_ids = []
     
@@ -396,7 +432,7 @@ def send_dual_posts(location, emoji, title, summary, body_text, link):
         print("Failed to post full story to channel")
         return
     
-    # ========== 3. Update short card with deep link ==========
+    # 3. Deep link
     full_msg_id = full_message_ids[0]
     deep_link = f"https://t.me/{FULL_CHANNEL_USERNAME}/{full_msg_id}"
     
@@ -447,8 +483,6 @@ def send_oracle():
         response = requests.post(url, json=payload, timeout=15)
         if response.status_code == 200:
             print(f"Oracle posted at {now}")
-        else:
-            print(f"Oracle failed: {response.text}")
     except Exception as e:
         print(f"Oracle error: {e}")
 
@@ -457,18 +491,16 @@ def run_bot():
     last_oracle_hour = None
     last_stats_time = datetime.now()
     init_db()
-    print("Bot started → Dual posting + 5-hour crime stats")
+    print("Bot started → Smart dedup + cleaner stats")
     
     while True:
         now = datetime.now()
         current_hour = now.hour
         
-        # Hourly Oracle
         if CONFIG["ORACLE_ENABLED"] and current_hour != last_oracle_hour and now.minute < 2:
             send_oracle()
             last_oracle_hour = current_hour
         
-        # 5-hour stats
         if (now - last_stats_time) >= timedelta(hours=CONFIG["STATS_INTERVAL_HOURS"]):
             send_stats_summary()
             last_stats_time = now
@@ -482,23 +514,31 @@ def run_bot():
                     title = entry.title
                     link = entry.link
 
-                    if not is_seen(article_id):
-                        mark_as_seen(article_id)
+                    if is_seen(article_id):
+                        continue
+                    
+                    # NEW: Skip if a very similar title was already posted
+                    if is_similar_title_seen(title):
+                        mark_as_seen(article_id)   # still mark the URL so we don't check it again
+                        print(f"Skipped duplicate title: {title[:60]}...")
+                        continue
+                    
+                    mark_as_seen(article_id)
+                    mark_title_seen(title)
+                    
+                    summary = entry.summary if 'summary' in entry else ""
+                    combined_text = (title + " " + summary).lower()
+                    
+                    if any(kw in combined_text for kw in KEYWORDS):
+                        location = detect_location(feed_url, combined_text)
+                        emoji = get_dynamic_emoji(combined_text)
+                        scraped_body = scrape_full_article(link)
                         
-                        summary = entry.summary if 'summary' in entry else ""
-                        combined_text = (title + " " + summary).lower()
+                        update_stats(combined_text)
                         
-                        if any(kw in combined_text for kw in KEYWORDS):
-                            location = detect_location(feed_url, combined_text)
-                            emoji = get_dynamic_emoji(combined_text)
-                            scraped_body = scrape_full_article(link)
-                            
-                            # Update stats
-                            update_stats(combined_text)
-                            
-                            send_dual_posts(location, emoji, title, summary, scraped_body, link)
-                            print(f"Posted [{location}]: {title}")
-                            time.sleep(4)
+                        send_dual_posts(location, emoji, title, summary, scraped_body, link)
+                        print(f"Posted [{location}]: {title}")
+                        time.sleep(4)
             except Exception as e:
                 print(f"Error on feed {feed_url}: {e}")
                 
